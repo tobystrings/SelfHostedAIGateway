@@ -5,10 +5,10 @@ import * as THREE from 'three';
 import { Asset, colorFor, connectedAssetIds, Dependency } from './graph';
 import { BuildingFootprint, StreetPath, UtilityPath } from './osm';
 import { PublicRecord } from './publicRecords';
-import { ParcelArea, ZoningArea } from './zoning';
+import { ZoningArea } from './zoning';
 
 type ViewPreset = 'recenter' | 'aerial' | 'operator';
-interface SceneProps { assets: Asset[]; dependencies: Dependency[]; footprints: BuildingFootprint[]; streets: StreetPath[]; utilities: UtilityPath[]; records: PublicRecord[]; zones: ZoningArea[]; parcels: ParcelArea[]; aerialUrl: string | null; terrainUrl: string | null; origin: [number, number]; contextRadius: number; contextOpacity: number; viewPreset: ViewPreset; viewRevision: number; selectedId: string | null; selectedUtilityId: string | null; selectedRecordId: string | null; selectedZoneId: string | null; selectedParcelId: string | null; isolate: boolean; onSelect: (asset: Asset) => void; onSelectUtility: (utility: UtilityPath) => void; onSelectBuilding: (building: BuildingFootprint) => void; onSelectStreet: (street: StreetPath) => void; onSelectRecord: (record: PublicRecord, cluster: PublicRecord[]) => void; onSelectZone: (zone: ZoningArea) => void; onSelectParcel: (parcel: ParcelArea) => void; }
+interface SceneProps { assets: Asset[]; dependencies: Dependency[]; footprints: BuildingFootprint[]; streets: StreetPath[]; utilities: UtilityPath[]; records: PublicRecord[]; zones: ZoningArea[]; aerialUrl: string | null; origin: [number, number]; contextRadius: number; contextOpacity: number; viewPreset: ViewPreset; viewRevision: number; selectedId: string | null; selectedUtilityId: string | null; selectedRecordId: string | null; selectedZoneId: string | null; isolate: boolean; onSelect: (asset: Asset) => void; onSelectUtility: (utility: UtilityPath) => void; onSelectBuilding: (building: BuildingFootprint) => void; onSelectStreet: (street: StreetPath) => void; onSelectRecord: (record: PublicRecord, cluster: PublicRecord[]) => void; onSelectZone: (zone: ZoningArea) => void; }
 
 function NavigationControls({ preset, revision, contextRadius }: { preset: ViewPreset; revision: number; contextRadius: number }) {
   const controls = useRef<any>(null);
@@ -107,15 +107,6 @@ function ZoningLayer({ zones, origin, selectedId, onSelect }: { zones: ZoningAre
   })}</group>;
 }
 
-function ParcelLayer({ parcels, origin, selectedId, onSelect }: { parcels: ParcelArea[]; origin: [number, number]; selectedId: string | null; onSelect: (parcel: ParcelArea) => void }) {
-  const metersPerLatitude = 111_320;
-  const metersPerLongitude = metersPerLatitude * Math.cos(origin[0] * Math.PI / 180);
-  return <group>{parcels.map((parcel) => {
-    const shape = new THREE.Shape(parcel.geometry.map(([lat, lon]) => new THREE.Vector2((lon - origin[1]) * metersPerLongitude / 12, -(lat - origin[0]) * metersPerLatitude / 12)));
-    return <mesh key={parcel.id} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.325, 0]} onClick={(event) => { event.stopPropagation(); onSelect(parcel); }}><shapeGeometry args={[shape]} /><meshBasicMaterial color={parcel.id === selectedId ? '#ffffff' : '#7ea9c3'} transparent opacity={parcel.id === selectedId ? 0.18 : 0.035} depthWrite={false} /></mesh>;
-  })}</group>;
-}
-
 function RasterLayer({ url, radius, opacity }: { url: string; radius: number; opacity: number }) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   useEffect(() => {
@@ -129,17 +120,15 @@ function RasterLayer({ url, radius, opacity }: { url: string; radius: number; op
   return <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.36, 0]}><planeGeometry args={[radius / 6, radius / 6]} /><meshBasicMaterial map={texture} transparent opacity={opacity} depthWrite={false} /></mesh>;
 }
 
-function Scene({ assets, dependencies, footprints, streets, utilities, records, zones, parcels, aerialUrl, terrainUrl, origin, contextRadius, contextOpacity, viewPreset, viewRevision, selectedId, selectedUtilityId, selectedRecordId, selectedZoneId, selectedParcelId, isolate, onSelect, onSelectUtility, onSelectBuilding, onSelectStreet, onSelectRecord, onSelectZone, onSelectParcel }: SceneProps) {
+function Scene({ assets, dependencies, footprints, streets, utilities, records, zones, aerialUrl, origin, contextRadius, contextOpacity, viewPreset, viewRevision, selectedId, selectedUtilityId, selectedRecordId, selectedZoneId, isolate, onSelect, onSelectUtility, onSelectBuilding, onSelectStreet, onSelectRecord, onSelectZone }: SceneProps) {
   const linked = selectedId ? connectedAssetIds(selectedId, dependencies) : new Set<string>();
   return <>
     <color attach="background" args={['#101a1d']} />
     <ambientLight intensity={1.3} /><directionalLight position={[4, 8, 3]} intensity={2.6} castShadow />
     <gridHelper args={[Math.max(140, contextRadius / 6), Math.max(32, Math.round(contextRadius / 50)), '#1f3a40', '#14272c']} position={[0, -0.34, 0]} />
-    {terrainUrl && <RasterLayer url={terrainUrl} radius={contextRadius} opacity={0.12} />}
     {aerialUrl && <RasterLayer url={aerialUrl} radius={contextRadius} opacity={0.22} />}
     <StreetLayer streets={streets} origin={origin} onSelect={onSelectStreet} />
     <ZoningLayer zones={zones} origin={origin} selectedId={selectedZoneId} onSelect={onSelectZone} />
-    <ParcelLayer parcels={parcels} origin={origin} selectedId={selectedParcelId} onSelect={onSelectParcel} />
     <BuildingLayer footprints={footprints} origin={origin} opacity={contextOpacity} onSelect={onSelectBuilding} />
     <UtilityLayer utilities={utilities} origin={origin} selectedId={selectedUtilityId} onSelect={onSelectUtility} />
     <PublicRecordLayer records={records} selectedId={selectedRecordId} onSelect={onSelectRecord} />

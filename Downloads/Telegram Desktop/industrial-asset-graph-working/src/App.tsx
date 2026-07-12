@@ -23,8 +23,8 @@ import {
   UtilityPath,
 } from "./osm";
 import { loadOregonDeqContext, loadPortlandPublicDocuments, loadPortlandPublicRecords, PublicRecord } from "./publicRecords";
-import { loadPortlandZoning, loadWashingtonCountyParcel, ParcelArea, ZoningArea } from "./zoning";
-import { aerialImageUrl, terrainImageUrl } from "./aerial";
+import { loadPortlandZoning, ZoningArea } from "./zoning";
+import { aerialImageUrl } from "./aerial";
 
 type AssetTab = "overview" | "specs" | "history" | "jobs";
 type SelectedMapContext =
@@ -43,6 +43,13 @@ const DEFAULT_SITE = {
   longitude: -123.1027909,
 } as const;
 const tabs: AssetTab[] = ["overview", "specs", "history", "jobs"];
+const individuallyToggleableAssets = [
+  { id: "boiler-1", label: "Steam Header SH-01" },
+  { id: "hyd-1", label: "Hydraulic Unit HU-01" },
+  { id: "safety-eye-1", label: "Safety Eye SE-01" },
+  { id: "plc-1", label: "PLC-1" },
+  { id: "mcc-1", label: "MCC-1 / 480V" },
+] as const;
 
 export default function App() {
   const [selected, setSelected] = useState<Asset | null>(assets[1]);
@@ -51,6 +58,7 @@ export default function App() {
   const [kindFilter, setKindFilter] = useState("ALL");
   const [showFieldVerifyElectrical, setShowFieldVerifyElectrical] = useState(true);
   const [showFieldVerifyPneumatic, setShowFieldVerifyPneumatic] = useState(true);
+  const [hiddenAssetIds, setHiddenAssetIds] = useState<Set<string>>(() => new Set());
   const [viewCommand, setViewCommand] = useState<{ preset: "recenter" | "aerial" | "operator"; revision: number }>({ preset: "recenter", revision: 0 });
   const [activeTab, setActiveTab] = useState<AssetTab>("overview");
   const [importedAssets, setImportedAssets] = useState<Asset[]>([]);
@@ -95,14 +103,10 @@ export default function App() {
   const [zones, setZones] = useState<ZoningArea[]>([]);
   const [showZoning, setShowZoning] = useState(true);
   const [selectedZone, setSelectedZone] = useState<ZoningArea | null>(null);
-  const [parcels, setParcels] = useState<ParcelArea[]>([]);
-  const [showParcels, setShowParcels] = useState(true);
-  const [selectedParcel, setSelectedParcel] = useState<ParcelArea | null>(null);
+  const [showAssetList, setShowAssetList] = useState(true);
   const [showAerial, setShowAerial] = useState(true);
   const [aerialUrl, setAerialUrl] = useState<string | null>(null);
-  const [showTerrain, setShowTerrain] = useState(true);
   const [startupPhase, setStartupPhase] = useState(0);
-  const [terrainUrl, setTerrainUrl] = useState<string | null>(null);
   const [contextOpacity, setContextOpacity] = useState(0.4);
   const [contextRadius, setContextRadius] = useState(250);
   const [mapContextStatus, setMapContextStatus] = useState(
@@ -132,14 +136,7 @@ export default function App() {
     query: "up to 1,000 m radius; maximum 60 areas",
     retrievedAt: null,
   });
-  const [parcelLayer, setParcelLayer] = useState<PublicLayerState>({
-    state: "off",
-    source: "Washington County taxlot GIS",
-    query: "tax lot containing the map origin",
-    retrievedAt: null,
-  });
   const [aerialLayer, setAerialLayer] = useState<PublicLayerState>({ state: "off", source: "Oregon Statewide Imagery Program 2024", query: "up to 1,500 m radius", retrievedAt: null });
-  const [terrainLayer, setTerrainLayer] = useState<PublicLayerState>({ state: "off", source: "USGS 3DEP elevation image service", query: "up to 1,500 m radius", retrievedAt: null });
   const [documentLayer, setDocumentLayer] = useState<PublicLayerState>({ state: "off", source: "Portland BDS mapped-document GIS", query: "160 m radius; maximum 50 documents", retrievedAt: null });
   const [environmentalLayer, setEnvironmentalLayer] = useState<PublicLayerState>({ state: "off", source: "Oregon DEQ cleanup GIS", query: "500 m radius; maximum 50 sites", retrievedAt: null });
   useEffect(() => {
@@ -149,9 +146,10 @@ export default function App() {
   const displayAssets = useMemo(() => [...assets, ...importedAssets], [importedAssets]);
   const displayDependencies = [...dependencies, ...evidence.dependencies];
   const visibleAssets = useMemo(() => displayAssets.filter((asset) =>
+    !hiddenAssetIds.has(asset.id) &&
     !(!showFieldVerifyElectrical && asset.kind === "ELECTRICAL" && asset.verificationStatus === "field-verify") &&
     !(!showFieldVerifyPneumatic && asset.kind === "PNEUMATIC" && asset.verificationStatus === "field-verify")
-  ), [displayAssets, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
+  ), [displayAssets, hiddenAssetIds, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
   const visibleAssetIds = new Set(visibleAssets.map((asset) => asset.id));
   const visibleDependencies = displayDependencies.filter((edge) => visibleAssetIds.has(edge.source) && visibleAssetIds.has(edge.target));
   const visibleUtilities = utilities.filter(
@@ -181,7 +179,7 @@ export default function App() {
       setSelected(null);
       setIsolate(false);
     }
-  }, [selected, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
+  }, [selected, hiddenAssetIds, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
   const related = selected
     ? visibleDependencies.filter(
         (edge) => edge.source === selected.id || edge.target === selected.id,
@@ -200,7 +198,7 @@ export default function App() {
   const selectedJobs = selected
     ? evidence.jobs.filter((job) => job.assetId === selected.id)
     : [];
-  const publicLayers = [mapLayer, utilityLayer, recordLayer, documentLayer, environmentalLayer, zoningLayer, parcelLayer, aerialLayer, terrainLayer];
+  const publicLayers = [mapLayer, utilityLayer, recordLayer, documentLayer, environmentalLayer, zoningLayer, aerialLayer];
   const loadedLayerCount = publicLayers.filter((layer) => layer.state === "current").length;
   const loadingLayerCount = publicLayers.filter((layer) => layer.state === "loading").length;
   const unavailableLayerCount = publicLayers.filter((layer) => layer.state === "unavailable").length;
@@ -491,25 +489,6 @@ export default function App() {
   }, [contextRadius, origin, showZoning, startupPhase >= 3]);
 
   useEffect(() => {
-    setParcels([]);
-    setSelectedParcel(null);
-    if (!showParcels) {
-      setParcelLayer({ state: "off", source: "Washington County taxlot GIS", query: "tax lot containing the map origin", retrievedAt: null });
-      return;
-    }
-    if (startupPhase < 4) { setParcelLayer({ state: "loading", source: "Washington County taxlot GIS", query: "tax lot containing the map origin", retrievedAt: null }); return; }
-    let current = true;
-    const query = "tax lot containing the map origin";
-    setParcelLayer({ state: "loading", source: "Washington County taxlot GIS", query, retrievedAt: null });
-    loadWashingtonCountyParcel(...origin).then((areas) => {
-      if (current) { setParcels(areas); setParcelLayer({ state: areas.length ? "current" : "unavailable", source: "Washington County taxlot GIS", query, retrievedAt: areas.length ? new Date().toISOString() : null }); }
-    }).catch(() => {
-      if (current) setParcelLayer({ state: "unavailable", source: "Washington County taxlot GIS", query, retrievedAt: null });
-    });
-    return () => { current = false; };
-  }, [origin, showParcels, startupPhase >= 4]);
-
-  useEffect(() => {
     if (!showAerial) { setAerialUrl(null); setAerialLayer({ state: "off", source: "Oregon Statewide Imagery Program 2024", query: "up to 1,500 m radius", retrievedAt: null }); return; }
     if (startupPhase < 5) { setAerialLayer({ state: "loading", source: "Oregon Statewide Imagery Program 2024", query: "up to 1,500 m radius", retrievedAt: null }); return; }
     let current = true;
@@ -524,22 +503,6 @@ export default function App() {
     image.src = url;
     return () => { current = false; window.clearTimeout(timeout); };
   }, [contextRadius, origin, showAerial, startupPhase >= 5]);
-
-  useEffect(() => {
-    if (!showTerrain) { setTerrainUrl(null); setTerrainLayer({ state: "off", source: "USGS 3DEP elevation image service", query: "up to 1,500 m radius", retrievedAt: null }); return; }
-    if (startupPhase < 6) { setTerrainLayer({ state: "loading", source: "USGS 3DEP elevation image service", query: "up to 1,500 m radius", retrievedAt: null }); return; }
-    let current = true;
-    const query = `${Math.min(contextRadius, 1_500)} m radius; 1,024 px image`;
-    const url = terrainImageUrl(...origin, contextRadius);
-    setTerrainLayer({ state: "loading", source: "USGS 3DEP elevation image service", query, retrievedAt: null });
-    const image = new Image();
-    const unavailable = () => { if (current) { setTerrainUrl(null); setTerrainLayer({ state: "unavailable", source: "USGS 3DEP elevation image service", query, retrievedAt: null }); } };
-    const timeout = window.setTimeout(unavailable, 12_000);
-    image.onload = () => { if (current) { window.clearTimeout(timeout); setTerrainUrl(url); setTerrainLayer({ state: "current", source: "USGS 3DEP elevation image service", query, retrievedAt: new Date().toISOString() }); } };
-    image.onerror = unavailable;
-    image.src = url;
-    return () => { current = false; window.clearTimeout(timeout); };
-  }, [contextRadius, origin, showTerrain, startupPhase >= 6]);
 
   const importMapExport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -635,8 +598,8 @@ export default function App() {
           ))}
         </div>
       </header>
-      <section className="workspace">
-        <aside className="asset-list">
+      <section className={`workspace ${showAssetList ? "" : "asset-list-hidden"}`}>
+        {showAssetList && <aside className="asset-list">
           <label>
             Find an asset
             <input
@@ -705,7 +668,7 @@ export default function App() {
               </span>
             </button>
           ))}
-        </aside>
+        </aside>}
         <section
           className="map"
           aria-label="Interactive three dimensional asset dependency map"
@@ -794,22 +757,29 @@ export default function App() {
               />
               Zoning
             </label>
-            <label title="Official Washington County tax-lot boundary containing the map origin. Geographic context only; never proof of ownership or equipment location.">
-              <input
-                type="checkbox"
-                checked={showParcels}
-                onChange={(event) => setShowParcels(event.target.checked)}
-              />
-              Washington County parcel
-            </label>
             <label title="Official Oregon aerial imagery, shown only as geographic context.">
               <input type="checkbox" checked={showAerial} onChange={(event) => setShowAerial(event.target.checked)} />
               Aerial
             </label>
-            <label title="USGS elevation raster, shown only as terrain context.">
-              <input type="checkbox" checked={showTerrain} onChange={(event) => setShowTerrain(event.target.checked)} />
-              Terrain
+            <label title="Show or remove the asset list panel from the map workspace.">
+              <input type="checkbox" checked={showAssetList} onChange={(event) => setShowAssetList(event.target.checked)} />
+              Asset list
             </label>
+            {individuallyToggleableAssets.map((assetLayer) => (
+              <label key={assetLayer.id} title={`Show or remove ${assetLayer.label} from the asset map and list.`}>
+                <input
+                  type="checkbox"
+                  checked={!hiddenAssetIds.has(assetLayer.id)}
+                  onChange={(event) => setHiddenAssetIds((current) => {
+                    const next = new Set(current);
+                    if (event.target.checked) next.delete(assetLayer.id);
+                    else next.add(assetLayer.id);
+                    return next;
+                  })}
+                />
+                {assetLayer.label}
+              </label>
+            ))}
             <label title="Hide unverified electrical starter records from both the map and asset list.">
               <input type="checkbox" checked={showFieldVerifyElectrical} onChange={(event) => setShowFieldVerifyElectrical(event.target.checked)} />
               Field-verify electrical
@@ -831,9 +801,7 @@ export default function App() {
               <small>{layerText("Utilities", utilityLayer)}</small>
               <small>{layerText("Records", recordLayer)}</small>
               <small>{layerText("Zoning", zoningLayer)}</small>
-              <small>{layerText("Parcels", parcelLayer)}</small>
               <small>{layerText("Aerial", aerialLayer)}</small>
-              <small>{layerText("Terrain", terrainLayer)}</small>
               <small>{layerText("Documents", documentLayer)}</small>
               <small>{layerText("DEQ", environmentalLayer)}</small>
             </details>
@@ -880,9 +848,7 @@ export default function App() {
             utilities={visibleUtilities}
             records={[...publicRecords, ...publicDocuments, ...environmentalRecords]}
             zones={zones}
-            parcels={parcels}
             aerialUrl={aerialUrl}
-            terrainUrl={terrainUrl}
             origin={origin}
             contextRadius={contextRadius}
             contextOpacity={contextOpacity}
@@ -892,7 +858,6 @@ export default function App() {
             selectedUtilityId={selectedUtility?.id ?? null}
             selectedRecordId={selectedRecord?.id ?? null}
             selectedZoneId={selectedZone?.id ?? null}
-            selectedParcelId={selectedParcel?.id ?? null}
             isolate={isolate}
             onSelect={(asset) => {
               setSelectedUtility(null);
@@ -944,15 +909,6 @@ export default function App() {
               setSelectedRecord(null);
               setSelectedRecordCluster([]);
               setSelectedZone(zone);
-            }}
-            onSelectParcel={(parcel) => {
-              setSelected(null);
-              setSelectedUtility(null);
-              setSelectedMapContext(null);
-              setSelectedRecord(null);
-              setSelectedRecordCluster([]);
-              setSelectedZone(null);
-              setSelectedParcel(parcel);
             }}
           />
           </Suspense>
@@ -1288,14 +1244,6 @@ export default function App() {
                   Open official zoning record
                 </a>
               </p>
-            </section>
-          ) : selectedParcel ? (
-            <section className="tab-copy">
-              <h3>Public parcel context</h3>
-              <p>Official Washington County tax-lot boundary only; it does not establish plant ownership, use, or equipment location.</p>
-              <p>Parcel: {selectedParcel.label}</p>
-              <p>Captured: {new Date(selectedParcel.capturedAt).toLocaleString()}</p>
-              <p><a href={selectedParcel.sourceUrl} target="_blank" rel="noreferrer">Open official parcel record</a></p>
             </section>
           ) : (
             <p>Select an asset or public context feature from the model.</p>
