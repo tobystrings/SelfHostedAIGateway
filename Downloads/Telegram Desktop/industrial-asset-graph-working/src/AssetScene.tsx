@@ -1,13 +1,32 @@
 import { Billboard, OrbitControls, Text } from '@react-three/drei';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Asset, colorFor, connectedAssetIds, Dependency } from './graph';
 import { BuildingFootprint, StreetPath, UtilityPath } from './osm';
 import { PublicRecord } from './publicRecords';
 import { ParcelArea, ZoningArea } from './zoning';
 
-interface SceneProps { assets: Asset[]; dependencies: Dependency[]; footprints: BuildingFootprint[]; streets: StreetPath[]; utilities: UtilityPath[]; records: PublicRecord[]; zones: ZoningArea[]; parcels: ParcelArea[]; aerialUrl: string | null; terrainUrl: string | null; origin: [number, number]; contextRadius: number; contextOpacity: number; selectedId: string | null; selectedUtilityId: string | null; selectedRecordId: string | null; selectedZoneId: string | null; selectedParcelId: string | null; isolate: boolean; onSelect: (asset: Asset) => void; onSelectUtility: (utility: UtilityPath) => void; onSelectBuilding: (building: BuildingFootprint) => void; onSelectStreet: (street: StreetPath) => void; onSelectRecord: (record: PublicRecord, cluster: PublicRecord[]) => void; onSelectZone: (zone: ZoningArea) => void; onSelectParcel: (parcel: ParcelArea) => void; }
+type ViewPreset = 'recenter' | 'aerial' | 'operator';
+interface SceneProps { assets: Asset[]; dependencies: Dependency[]; footprints: BuildingFootprint[]; streets: StreetPath[]; utilities: UtilityPath[]; records: PublicRecord[]; zones: ZoningArea[]; parcels: ParcelArea[]; aerialUrl: string | null; terrainUrl: string | null; origin: [number, number]; contextRadius: number; contextOpacity: number; viewPreset: ViewPreset; viewRevision: number; selectedId: string | null; selectedUtilityId: string | null; selectedRecordId: string | null; selectedZoneId: string | null; selectedParcelId: string | null; isolate: boolean; onSelect: (asset: Asset) => void; onSelectUtility: (utility: UtilityPath) => void; onSelectBuilding: (building: BuildingFootprint) => void; onSelectStreet: (street: StreetPath) => void; onSelectRecord: (record: PublicRecord, cluster: PublicRecord[]) => void; onSelectZone: (zone: ZoningArea) => void; onSelectParcel: (parcel: ParcelArea) => void; }
+
+function NavigationControls({ preset, revision, contextRadius }: { preset: ViewPreset; revision: number; contextRadius: number }) {
+  const controls = useRef<any>(null);
+  const { camera } = useThree();
+  useEffect(() => {
+    const distance = Math.min(Math.max(contextRadius / 10, 18), 95);
+    const positions: Record<ViewPreset, [number, number, number]> = {
+      recenter: [distance * 0.72, distance * 0.58, distance * 0.82],
+      aerial: [0.01, Math.max(distance, 30), 0.01],
+      operator: [0, 2.1, Math.min(distance * 0.72, 28)],
+    };
+    camera.position.set(...positions[preset]);
+    camera.up.set(0, 1, 0);
+    controls.current?.target.set(0, 0, 0);
+    controls.current?.update();
+  }, [camera, contextRadius, preset, revision]);
+  return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} minDistance={3} maxDistance={Math.max(120, contextRadius / 8)} maxPolarAngle={Math.PI / 2.01} />;
+}
 
 function AssetNode({ asset, selected, dimmed, onSelect }: { asset: Asset; selected: boolean; dimmed: boolean; onSelect: () => void }) {
   const color = colorFor[asset.kind];
@@ -110,7 +129,7 @@ function RasterLayer({ url, radius, opacity }: { url: string; radius: number; op
   return <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.36, 0]}><planeGeometry args={[radius / 6, radius / 6]} /><meshBasicMaterial map={texture} transparent opacity={opacity} depthWrite={false} /></mesh>;
 }
 
-function Scene({ assets, dependencies, footprints, streets, utilities, records, zones, parcels, aerialUrl, terrainUrl, origin, contextRadius, contextOpacity, selectedId, selectedUtilityId, selectedRecordId, selectedZoneId, selectedParcelId, isolate, onSelect, onSelectUtility, onSelectBuilding, onSelectStreet, onSelectRecord, onSelectZone, onSelectParcel }: SceneProps) {
+function Scene({ assets, dependencies, footprints, streets, utilities, records, zones, parcels, aerialUrl, terrainUrl, origin, contextRadius, contextOpacity, viewPreset, viewRevision, selectedId, selectedUtilityId, selectedRecordId, selectedZoneId, selectedParcelId, isolate, onSelect, onSelectUtility, onSelectBuilding, onSelectStreet, onSelectRecord, onSelectZone, onSelectParcel }: SceneProps) {
   const linked = selectedId ? connectedAssetIds(selectedId, dependencies) : new Set<string>();
   return <>
     <color attach="background" args={['#101a1d']} />
@@ -126,7 +145,7 @@ function Scene({ assets, dependencies, footprints, streets, utilities, records, 
     <PublicRecordLayer records={records} selectedId={selectedRecordId} onSelect={onSelectRecord} />
     {dependencies.map((edge) => { const source = assets.find((asset) => asset.id === edge.source)!; const target = assets.find((asset) => asset.id === edge.target)!; const active = selectedId === edge.source || selectedId === edge.target; return <DependencyLine key={edge.id} source={source} target={target} active={active} dimmed={isolate && !active} />; })}
     {assets.map((asset) => <AssetNode key={asset.id} asset={asset} selected={asset.id === selectedId} dimmed={isolate && selectedId !== null && !linked.has(asset.id)} onSelect={() => onSelect(asset)} />)}
-    <OrbitControls makeDefault minDistance={5} maxDistance={Math.max(120, contextRadius / 8)} maxPolarAngle={Math.PI / 2.05} />
+    <NavigationControls preset={viewPreset} revision={viewRevision} contextRadius={contextRadius} />
   </>;
 }
 

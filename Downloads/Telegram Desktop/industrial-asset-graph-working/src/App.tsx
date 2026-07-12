@@ -49,6 +49,9 @@ export default function App() {
   const [isolate, setIsolate] = useState(false);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState("ALL");
+  const [showFieldVerifyElectrical, setShowFieldVerifyElectrical] = useState(true);
+  const [showFieldVerifyPneumatic, setShowFieldVerifyPneumatic] = useState(true);
+  const [viewCommand, setViewCommand] = useState<{ preset: "recenter" | "aerial" | "operator"; revision: number }>({ preset: "recenter", revision: 0 });
   const [activeTab, setActiveTab] = useState<AssetTab>("overview");
   const [importedAssets, setImportedAssets] = useState<Asset[]>([]);
   const [importMessage, setImportMessage] = useState(
@@ -143,14 +146,20 @@ export default function App() {
     const timers = [1, 2, 3, 4, 5, 6].map((phase) => window.setTimeout(() => setStartupPhase(phase), phase * 350));
     return () => timers.forEach(window.clearTimeout);
   }, []);
-  const displayAssets = [...assets, ...importedAssets];
+  const displayAssets = useMemo(() => [...assets, ...importedAssets], [importedAssets]);
   const displayDependencies = [...dependencies, ...evidence.dependencies];
+  const visibleAssets = useMemo(() => displayAssets.filter((asset) =>
+    !(!showFieldVerifyElectrical && asset.kind === "ELECTRICAL" && asset.verificationStatus === "field-verify") &&
+    !(!showFieldVerifyPneumatic && asset.kind === "PNEUMATIC" && asset.verificationStatus === "field-verify")
+  ), [displayAssets, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
+  const visibleAssetIds = new Set(visibleAssets.map((asset) => asset.id));
+  const visibleDependencies = displayDependencies.filter((edge) => visibleAssetIds.has(edge.source) && visibleAssetIds.has(edge.target));
   const visibleUtilities = utilities.filter(
     (utility) => utilityFilter === "all" || utility.kind === utilityFilter,
   );
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return displayAssets.filter(
+    return visibleAssets.filter(
       (asset) =>
         (kindFilter === "ALL" || asset.kind === kindFilter) &&
         (!needle ||
@@ -166,9 +175,15 @@ export default function App() {
             .toLowerCase()
             .includes(needle)),
     );
-  }, [displayAssets, kindFilter, query]);
+  }, [visibleAssets, kindFilter, query]);
+  useEffect(() => {
+    if (selected && !visibleAssetIds.has(selected.id)) {
+      setSelected(null);
+      setIsolate(false);
+    }
+  }, [selected, showFieldVerifyElectrical, showFieldVerifyPneumatic]);
   const related = selected
-    ? displayDependencies.filter(
+    ? visibleDependencies.filter(
         (edge) => edge.source === selected.id || edge.target === selected.id,
       )
     : [];
@@ -697,6 +712,11 @@ export default function App() {
         >
           <div className="map-toolbar">
             <span>{mapContextStatus}</span>
+            <div className="view-controls" aria-label="Map view controls">
+              <button onClick={() => setViewCommand((current) => ({ preset: "recenter", revision: current.revision + 1 }))}>Recenter</button>
+              <button onClick={() => setViewCommand((current) => ({ preset: "aerial", revision: current.revision + 1 }))}>Aerial view</button>
+              <button onClick={() => setViewCommand((current) => ({ preset: "operator", revision: current.revision + 1 }))}>Operator view</button>
+            </div>
             <label>
               Context
               <input
@@ -790,6 +810,14 @@ export default function App() {
               <input type="checkbox" checked={showTerrain} onChange={(event) => setShowTerrain(event.target.checked)} />
               Terrain
             </label>
+            <label title="Hide unverified electrical starter records from both the map and asset list.">
+              <input type="checkbox" checked={showFieldVerifyElectrical} onChange={(event) => setShowFieldVerifyElectrical(event.target.checked)} />
+              Field-verify electrical
+            </label>
+            <label title="Hide unverified pneumatic starter records from both the map and asset list.">
+              <input type="checkbox" checked={showFieldVerifyPneumatic} onChange={(event) => setShowFieldVerifyPneumatic(event.target.checked)} />
+              Field-verify pneumatic
+            </label>
             <button
               className={isolate ? "active" : ""}
               onClick={() => setIsolate((value) => !value)}
@@ -845,8 +873,8 @@ export default function App() {
           )}
           <Suspense fallback={<div className="map-loading">Loading 3D context...</div>}>
           <AssetScene
-            assets={displayAssets}
-            dependencies={displayDependencies}
+            assets={visibleAssets}
+            dependencies={visibleDependencies}
             footprints={footprints}
             streets={streets}
             utilities={visibleUtilities}
@@ -858,6 +886,8 @@ export default function App() {
             origin={origin}
             contextRadius={contextRadius}
             contextOpacity={contextOpacity}
+            viewPreset={viewCommand.preset}
+            viewRevision={viewCommand.revision}
             selectedId={selected?.id ?? null}
             selectedUtilityId={selectedUtility?.id ?? null}
             selectedRecordId={selectedRecord?.id ?? null}
@@ -1005,7 +1035,7 @@ export default function App() {
                     <h3>Direct dependency claims</h3>
                     {related.length ? (
                       related.map((edge) => {
-                        const peer = displayAssets.find(
+                        const peer = visibleAssets.find(
                           (asset) =>
                             asset.id ===
                             (edge.source === selected.id

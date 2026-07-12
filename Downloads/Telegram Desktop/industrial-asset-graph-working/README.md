@@ -8,6 +8,8 @@ The parcel layer queries the official Washington County tax-lot feature service 
 
 The nearest public building footprint to the geocoded origin is highlighted as a candidate facility outline. Because an address point can fall on a road or parcel edge, this proximity match remains unverified until confirmed with a site plan or field observation.
 
+The map toolbar provides recenter, aerial, and operator camera presets. Field-verification electrical and pneumatic starter records can be independently hidden from the map, asset list, and dependency display.
+
 ## Local setup
 
 Requires Node.js 20+ and Python 3 with Playwright/Pillow only for the visual check.

@@ -50,6 +50,7 @@ canvas { position: absolute !important; inset: 0; width: 100% !important; height
 .map-toolbar button { border: 1px solid #52727a; background: #1c3338; color: #dce6e8; padding: 6px 8px; border-radius: 3px; font-size: 11px; }
 .map-toolbar button.active { background: #2c6a64; border-color: #75d4bf; }
 .map-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.view-controls { display: inline-flex; gap: 5px; padding-right: 8px; border-right: 1px solid #2e4a50; }
 .layer-status { position: relative; }
 .layer-status summary { cursor: pointer; font-size: 11px; }
 .layer-status small { display: block; max-width: 440px; margin-top: 4px; color: #8fa6aa; text-transform: none; }
