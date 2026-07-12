@@ -1,0 +1,59 @@
+{
+  "version": "asset-evidence/v1",
+  "sources": [
+    {
+      "id": "fixture-note",
+      "title": "Fixture field note",
+      "kind": "walkdown",
+      "sourceUri": "https://example.com/fixture",
+      "capturedAt": "2026-01-02T03:04:05Z",
+      "reviewer": "Fixture reviewer"
+    }
+  ],
+  "claims": [
+    {
+      "id": "fixture-mcc-tag",
+      "assetId": "safety-eye-1",
+      "field": "Asset tag",
+      "value": "FIXTURE-SE-01",
+      "sourceId": "fixture-note",
+      "locator": "Photo 1, label region",
+      "verificationStatus": "verified",
+      "reviewState": "accepted",
+      "reviewer": "Fixture reviewer"
+    }
+  ],
+  "events": [
+    {
+      "id": "fixture-mcc-event",
+      "assetId": "safety-eye-1",
+      "kind": "inspection",
+      "summary": "Fixture inspection record",
+      "sourceId": "fixture-note",
+      "locator": "Row 2",
+      "verificationStatus": "field-verify"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "fixture-mcc-job",
+      "assetId": "safety-eye-1",
+      "title": "Fixture work order",
+      "status": "planned",
+      "sourceId": "fixture-note",
+      "locator": "Row 3",
+      "verificationStatus": "field-verify"
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "fixture-link",
+      "source": "plc-1",
+      "target": "hyd-1",
+      "relation": "CONTROLS",
+      "sourceId": "fixture-note",
+      "locator": "Sheet 4, loop 2",
+      "verificationStatus": "field-verify"
+    }
+  ]
+}
