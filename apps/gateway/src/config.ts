@@ -19,6 +19,16 @@ const schema = z
       .string()
       .default("postgres://gateway:gateway@localhost:5432/gateway"),
     DATABASE_POOL_MAX: z.coerce.number().int().positive().default(20),
+    DATABASE_CONNECTION_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5_000),
+    DATABASE_STATEMENT_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30_000),
     MASTER_ENCRYPTION_KEY: z.string().optional(),
     BOOTSTRAP_ADMIN_EMAIL: z.string().email().default("admin@example.local"),
     BOOTSTRAP_ADMIN_PASSWORD: z.string().default("change-this-immediately"),
