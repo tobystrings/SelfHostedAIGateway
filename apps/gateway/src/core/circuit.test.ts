@@ -1,0 +1,1 @@
+import {describe,it,expect} from 'vitest';import {CircuitBreaker} from './circuit.js';describe('circuit',()=>{it('opens after failures',()=>{const b=new CircuitBreaker(2,1000);b.recordFailure();b.recordFailure();expect(b.isOpen()).toBe(true);b.recordSuccess();expect(b.isOpen()).toBe(false)})})

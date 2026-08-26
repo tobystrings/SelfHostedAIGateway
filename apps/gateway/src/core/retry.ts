@@ -1,0 +1,1 @@
+export function retryDelayMs(attempt:number,base=250,retryAfterMs?:number){if(retryAfterMs&&retryAfterMs>0)return Math.min(retryAfterMs,30000);const exp=Math.min(10000,base*2**Math.max(0,attempt-1));return Math.round(exp*(0.75+Math.random()*0.5));}

@@ -1,0 +1,3 @@
+import type {ChatRequest,ChatResponse,EmbeddingRequest,EmbeddingResponse,GatewayModel,StreamEvent} from './types.js';
+export interface ProviderContext{signal:AbortSignal;requestId:string}
+export interface ProviderAdapter{id:string;kind:string;discoverModels(ctx:ProviderContext):Promise<GatewayModel[]>;chat(req:ChatRequest,ctx:ProviderContext):Promise<ChatResponse>;streamChat(req:ChatRequest,ctx:ProviderContext):AsyncIterable<StreamEvent>;embeddings(req:EmbeddingRequest,ctx:ProviderContext):Promise<EmbeddingResponse>;health(ctx:ProviderContext):Promise<{ok:boolean;latencyMs:number;detail?:string}>}

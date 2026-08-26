@@ -1,0 +1,2 @@
+import type {ProviderAdapter} from '../core/provider.js';import {GatewayError} from '../core/errors.js';
+export class ProviderRegistry{private map=new Map<string,ProviderAdapter>();constructor(adapters:ProviderAdapter[]=[]){adapters.forEach(a=>this.register(a))}register(a:ProviderAdapter){this.map.set(a.id,a)}get(id:string){const a=this.map.get(id);if(!a)throw new GatewayError({code:'provider_not_found',message:`Provider ${id} is not configured`,type:'client',retryable:false,status:404});return a}list(){return [...this.map.values()]}}

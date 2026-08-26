@@ -1,0 +1,1 @@
+import {describe,it,expect} from 'vitest';import {estimateCost} from './cost.js';describe('cost',()=>{it('prices input and output',()=>expect(estimateCost({inputTokens:1_000_000,outputTokens:500_000,totalTokens:1_500_000},{inputPerMillionUsd:2,outputPerMillionUsd:4})).toBe(4))})

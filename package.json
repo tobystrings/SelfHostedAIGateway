@@ -1,0 +1,29 @@
+{
+  "name": "self-hosted-ai-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/gateway",
+    "apps/admin"
+  ],
+  "scripts": {
+    "build": "npm run build -w @gateway/server && npm run build -w @gateway/admin",
+    "dev": "npm run dev -w @gateway/server",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck -w @gateway/server && npm run typecheck -w @gateway/admin",
+    "test": "npm run test -w @gateway/server",
+    "migrate": "npm run migrate -w @gateway/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.35.0",
+    "prettier": "^3.6.2",
+    "typescript-eslint": "^8.41.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module"
+}
