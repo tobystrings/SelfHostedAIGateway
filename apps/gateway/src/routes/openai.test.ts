@@ -47,3 +47,53 @@ describe("OpenAI-compatible request cancellation", () => {
     await app.close();
   });
 });
+
+describe("OpenAI-compatible model authorization", () => {
+  it("only lists models allowed by the authenticated API key", async () => {
+    const app = Fastify({ logger: false });
+    app.decorate("requireApiKey", async (request: any) => {
+      request.apiIdentity = {
+        allowedProviders: ["allowed-provider"],
+        allowedModels: ["allowed-model"],
+      };
+    });
+    const models = new ModelRegistry();
+    models.setMany([
+      {
+        provider: "allowed-provider",
+        id: "allowed-model",
+        enabled: true,
+        capabilities: {},
+      },
+      {
+        provider: "allowed-provider",
+        id: "blocked-model",
+        enabled: true,
+        capabilities: {},
+      },
+      {
+        provider: "blocked-provider",
+        id: "allowed-model",
+        enabled: true,
+        capabilities: {},
+      },
+    ]);
+    await registerOpenAiRoutes(app, {
+      gateway: {} as GatewayService,
+      models,
+      requestTimeoutMs: 100,
+      streamIdleTimeoutMs: 100,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: "Bearer test" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toHaveLength(1);
+    expect(response.json().data[0].id).toBe("allowed-provider/allowed-model");
+    await app.close();
+  });
+});

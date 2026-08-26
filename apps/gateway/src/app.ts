@@ -173,6 +173,7 @@ export async function buildApp(o: BuildOptions = {}) {
     );
     router.setPolicies(rp.rows);
   } catch (e) {
+    if (config.NODE_ENV === "production") throw e;
     app.log.warn({ err: redact(e) }, "state load failed");
   }
   (app as any).decorate("requireApiKey", async (req: any) => {

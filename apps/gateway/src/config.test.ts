@@ -29,10 +29,25 @@ describe("production configuration", () => {
         "postgres://gateway:a-long-random-database-password@postgres:5432/gateway",
       BOOTSTRAP_ADMIN_PASSWORD: "a-long-random-admin-password",
       SESSION_SECRET: "a-session-secret-with-at-least-thirty-two-characters",
-      MASTER_ENCRYPTION_KEY: "a-master-key-with-at-least-thirty-two-characters",
+      MASTER_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
     };
 
     expect(loadConfig().NODE_ENV).toBe("production");
+  });
+
+  it("rejects a malformed encryption key even when it is long", () => {
+    process.env = {
+      ...originalEnvironment,
+      NODE_ENV: "production",
+      DATABASE_URL:
+        "postgres://gateway:a-long-random-database-password@postgres:5432/gateway",
+      BOOTSTRAP_ADMIN_PASSWORD: "a-long-random-admin-password",
+      SESSION_SECRET: "a-session-secret-with-at-least-thirty-two-characters",
+      MASTER_ENCRYPTION_KEY:
+        "this-is-long-enough-but-not-a-valid-32-byte-base64-key",
+    };
+
+    expect(() => loadConfig()).toThrow(/base64 encoding of exactly 32 bytes/);
   });
 
   it("keeps development defaults available for local development", () => {

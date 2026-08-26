@@ -78,11 +78,21 @@ export async function registerOpenAiRoutes(
   app.get(
     "/v1/models",
     { preHandler: (app as any).requireApiKey },
-    async () => ({
+    async (request: any) => ({
       object: "list",
       data: deps.models
         .list()
-        .filter((model) => model.enabled)
+        .filter(
+          (model) =>
+            model.enabled &&
+            (!request.apiIdentity.allowedProviders?.length ||
+              request.apiIdentity.allowedProviders.includes(model.provider)) &&
+            (!request.apiIdentity.allowedModels?.length ||
+              request.apiIdentity.allowedModels.includes(model.id) ||
+              request.apiIdentity.allowedModels.includes(
+                `${model.provider}/${model.id}`,
+              )),
+        )
         .map((model) => ({
           id: model.metadata?.alias ?? `${model.provider}/${model.id}`,
           object: "model",

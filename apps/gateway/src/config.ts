@@ -64,6 +64,17 @@ const schema = z
       }
     }
     if (
+      value.MASTER_ENCRYPTION_KEY &&
+      Buffer.from(value.MASTER_ENCRYPTION_KEY, "base64").length !== 32
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["MASTER_ENCRYPTION_KEY"],
+        message:
+          "MASTER_ENCRYPTION_KEY must be base64 encoding of exactly 32 bytes",
+      });
+    }
+    if (
       /:(gateway|change-me-now|replace-with-a-strong-random-password)@/i.test(
         value.DATABASE_URL,
       )
