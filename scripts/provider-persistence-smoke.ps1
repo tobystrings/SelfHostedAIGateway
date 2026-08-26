@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 $base = "http://127.0.0.1:8080"
 $providerSlug = "persistence-test"
 $keyName = "persistence-verification-key"
+$ratePolicyName = "persistence-verification-rate-limit"
+$budgetName = "persistence-verification-budget"
 $mockName = "gateway-mock-provider-$PID"
 $mockStarted = $false
 $settings = @{}
@@ -75,6 +77,17 @@ function Invoke-Embeddings([string]$gatewayKey) {
     }
 }
 
+function Invoke-ChatStatus([string]$gatewayKey) {
+    $body = @{
+        model = "mock-alias"
+        messages = @(@{ role = "user"; content = "control check" })
+    } | ConvertTo-Json -Depth 5
+    $response = Invoke-WebRequest "$base/v1/chat/completions" -Method Post `
+        -ContentType "application/json" -Body $body `
+        -Headers @{ Authorization = "Bearer $gatewayKey" } -SkipHttpErrorCheck
+    return [int]$response.StatusCode
+}
+
 try {
     $gatewayContainer = docker compose ps -q gateway
     if (-not $gatewayContainer) { throw "Gateway container is not running" }
@@ -121,6 +134,20 @@ try {
     Invoke-Model $key.key
     Invoke-Stream $key.key
     Invoke-Embeddings $key.key
+    docker compose exec -T postgres psql -U gateway -d gateway -c `
+        "INSERT INTO rate_limit_policies(name,subject_type,subject_value,requests_per_minute) VALUES('$ratePolicyName','api_key','$($key.id)',0);" | Out-Null
+    if ((Invoke-ChatStatus $key.key) -ne 429) {
+        throw "Scoped request rate limit was not enforced"
+    }
+    docker compose exec -T postgres psql -U gateway -d gateway -c `
+        "DELETE FROM rate_limit_policies WHERE name='$ratePolicyName';" | Out-Null
+    docker compose exec -T postgres psql -U gateway -d gateway -c `
+        "INSERT INTO budgets(name,subject_type,subject_id,monthly_token_limit) VALUES('$budgetName','api_key','$($key.id)',0);" | Out-Null
+    if ((Invoke-ChatStatus $key.key) -ne 402) {
+        throw "Scoped token budget was not enforced"
+    }
+    docker compose exec -T postgres psql -U gateway -d gateway -c `
+        "DELETE FROM budgets WHERE name='$budgetName';" | Out-Null
     docker compose restart gateway | Out-Null
     Wait-Gateway
     Invoke-Model $key.key
@@ -134,12 +161,14 @@ try {
         invocationAfterRestart = $true
         streamingBeforeAndAfterRestart = $true
         embeddingsBeforeAndAfterRestart = $true
+        scopedRateLimitStatus = 429
+        scopedBudgetStatus = 402
         encryptedCredentialPersisted = $true
     } | ConvertTo-Json -Compress
 } finally {
     try {
         docker compose exec -T postgres psql -U gateway -d gateway -c `
-            "DELETE FROM client_api_keys WHERE name='$keyName'; DELETE FROM providers WHERE slug='$providerSlug';" | Out-Null
+            "DELETE FROM rate_limit_policies WHERE name='$ratePolicyName'; DELETE FROM budgets WHERE name='$budgetName'; DELETE FROM client_api_keys WHERE name='$keyName'; DELETE FROM providers WHERE slug='$providerSlug';" | Out-Null
         docker compose restart gateway | Out-Null
         Wait-Gateway
     } finally {
