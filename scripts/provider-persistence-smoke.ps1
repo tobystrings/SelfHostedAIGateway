@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 $base = "http://127.0.0.1:8080"
 $providerSlug = "persistence-test"
 $keyName = "persistence-verification-key"
+$mockName = "gateway-mock-provider-$PID"
+$mockStarted = $false
 $settings = @{}
 Get-Content -LiteralPath ".env" | ForEach-Object {
     if ($_ -match '^([^#=]+)=(.*)$') {
@@ -43,14 +45,54 @@ function Invoke-Model([string]$gatewayKey) {
     }
 }
 
+function Invoke-Stream([string]$gatewayKey) {
+    $body = @{
+        model = "mock-alias"
+        stream = $true
+        messages = @(@{ role = "user"; content = "stream check" })
+    } | ConvertTo-Json -Depth 5
+    $result = Invoke-WebRequest "$base/v1/chat/completions" -Method Post `
+        -ContentType "application/json" -Body $body `
+        -Headers @{ Authorization = "Bearer $gatewayKey" }
+    if ($result.Content -notmatch "persistent-" -or
+        $result.Content -notmatch "stream-ok" -or
+        $result.Content -notmatch "data: \[DONE\]") {
+        throw "Streaming response was not OpenAI-compatible"
+    }
+}
+
+function Invoke-Embeddings([string]$gatewayKey) {
+    $body = @{
+        model = "mock-alias"
+        input = @("first", "second")
+    } | ConvertTo-Json -Depth 5
+    $result = Invoke-RestMethod "$base/v1/embeddings" -Method Post `
+        -ContentType "application/json" -Body $body `
+        -Headers @{ Authorization = "Bearer $gatewayKey" }
+    if ($result.object -ne "list" -or $result.data.Count -ne 2 -or
+        $result.data[0].embedding.Count -ne 3) {
+        throw "Embedding response was not OpenAI-compatible"
+    }
+}
+
 try {
+    $gatewayContainer = docker compose ps -q gateway
+    if (-not $gatewayContainer) { throw "Gateway container is not running" }
+    $networks = docker inspect --format '{{json .NetworkSettings.Networks}}' `
+        $gatewayContainer | ConvertFrom-Json
+    $network = $networks.PSObject.Properties.Name | Select-Object -First 1
+    $mockPath = (Resolve-Path (Join-Path $PSScriptRoot "mock-provider.mjs")).Path
+    docker run -d --name $mockName --network $network `
+        --mount "type=bind,source=$mockPath,target=/app/mock-provider.mjs,readonly" `
+        node:22-bookworm-slim node /app/mock-provider.mjs | Out-Null
+    $mockStarted = $true
     Wait-Gateway
     Login
     $providerBody = @{
         slug = $providerSlug
         kind = "openai-compatible"
         displayName = "Persistence Test"
-        baseUrl = "http://gateway-mock-provider:18080/v1"
+        baseUrl = "http://$mockName`:18080/v1"
         apiKey = "test"
         config = @{ headers = @{ "x-test-secret" = "test-header" } }
     } | ConvertTo-Json
@@ -77,20 +119,30 @@ try {
         -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
 
     Invoke-Model $key.key
+    Invoke-Stream $key.key
+    Invoke-Embeddings $key.key
     docker compose restart gateway | Out-Null
     Wait-Gateway
     Invoke-Model $key.key
+    Invoke-Stream $key.key
+    Invoke-Embeddings $key.key
     [pscustomobject]@{
         providerCreated = $true
         discoverySucceeded = $true
         modelUpdateAppliedImmediately = $true
         invocationBeforeRestart = $true
         invocationAfterRestart = $true
+        streamingBeforeAndAfterRestart = $true
+        embeddingsBeforeAndAfterRestart = $true
         encryptedCredentialPersisted = $true
     } | ConvertTo-Json -Compress
 } finally {
-    docker compose exec -T postgres psql -U gateway -d gateway -c `
-        "DELETE FROM client_api_keys WHERE name='$keyName'; DELETE FROM providers WHERE slug='$providerSlug';" | Out-Null
-    docker compose restart gateway | Out-Null
-    Wait-Gateway
+    try {
+        docker compose exec -T postgres psql -U gateway -d gateway -c `
+            "DELETE FROM client_api_keys WHERE name='$keyName'; DELETE FROM providers WHERE slug='$providerSlug';" | Out-Null
+        docker compose restart gateway | Out-Null
+        Wait-Gateway
+    } finally {
+        if ($mockStarted) { docker rm -f $mockName | Out-Null }
+    }
 }

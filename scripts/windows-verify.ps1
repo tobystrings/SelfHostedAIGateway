@@ -106,4 +106,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/ready" | ConvertTo-Json -Depth 5
 
 Write-Step "Authentication and API smoke tests"
 & (Join-Path $PSScriptRoot "api-smoke.ps1")
+
+Write-Step "Provider persistence, streaming, and embeddings"
+& (Join-Path $PSScriptRoot "provider-persistence-smoke.ps1")
 Write-Host "Verification completed." -ForegroundColor Green
