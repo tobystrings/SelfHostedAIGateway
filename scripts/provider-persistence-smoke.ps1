@@ -32,7 +32,7 @@ function Login {
 
 function Invoke-Model([string]$gatewayKey) {
     $body = @{
-        model = "$providerSlug/mock-model"
+        model = "mock-alias"
         messages = @(@{ role = "user"; content = "persistence check" })
     } | ConvertTo-Json -Depth 5
     $result = Invoke-RestMethod "$base/v1/chat/completions" -Method Post `
@@ -52,12 +52,19 @@ try {
         displayName = "Persistence Test"
         baseUrl = "http://gateway-mock-provider:18080/v1"
         apiKey = "test"
+        config = @{ headers = @{ "x-test-secret" = "test-header" } }
     } | ConvertTo-Json
     $null = Invoke-RestMethod "$base/api/admin/providers" -Method Post `
         -ContentType "application/json" -Body $providerBody `
         -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
     $null = Invoke-RestMethod "$base/api/admin/providers/$providerSlug/discover" `
         -Method Post -ContentType "application/json" -Body '{}' `
+        -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
+    $models = Invoke-RestMethod "$base/api/admin/models" -WebSession $session
+    $model = $models | Where-Object { $_.provider_slug -eq $providerSlug }
+    if (-not $model) { throw "Discovered model was not persisted" }
+    $null = Invoke-RestMethod "$base/api/admin/models/$($model.id)" -Method Patch `
+        -ContentType "application/json" -Body '{"alias":"mock-alias"}' `
         -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
     $keyBody = @{
         name = $keyName
@@ -76,6 +83,7 @@ try {
     [pscustomobject]@{
         providerCreated = $true
         discoverySucceeded = $true
+        modelUpdateAppliedImmediately = $true
         invocationBeforeRestart = $true
         invocationAfterRestart = $true
         encryptedCredentialPersisted = $true

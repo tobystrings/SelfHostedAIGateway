@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewayService } from "../services/gateway.js";
 import type { ModelRegistry } from "../services/model-registry.js";
 import type { ChatRequest, Message } from "../core/types.js";
-import { GatewayError } from "../core/errors.js";
+import { GatewayError, normalizeUnknownError } from "../core/errors.js";
 
 function normalized(body: any): ChatRequest {
   return {
@@ -165,6 +165,19 @@ export async function registerOpenAiRoutes(
                 );
               }
             }
+          } catch (error) {
+            const normalized = normalizeUnknownError(
+              cancellation.controller.signal.aborted
+                ? cancellation.controller.signal.reason
+                : error,
+            );
+            if (!reply.raw.writableEnded) {
+              reply.raw.write(
+                `data: ${JSON.stringify({ error: { message: normalized.shape.message, type: normalized.shape.type, code: normalized.shape.code } })}\n\n`,
+              );
+              reply.raw.end("data: [DONE]\n\n");
+            }
+            return reply;
           } finally {
             clearTimeout(idleTimer);
           }

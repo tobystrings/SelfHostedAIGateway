@@ -23,4 +23,16 @@ describe("error normalization", () => {
     );
     expect(error.shape.message).toBe("Internal gateway error");
   });
+
+  it("maps platform timeout errors to a gateway timeout", () => {
+    const error = normalizeUnknownError(
+      new DOMException("timed out", "TimeoutError"),
+    );
+    expect(error.shape).toMatchObject({
+      code: "request_timeout",
+      type: "timeout",
+      status: 504,
+      retryable: true,
+    });
+  });
 });

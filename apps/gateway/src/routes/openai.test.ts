@@ -46,6 +46,49 @@ describe("OpenAI-compatible request cancellation", () => {
     expect(response.json().error.code).toBe("request_timeout");
     await app.close();
   });
+
+  it("emits a compatible SSE error and closes an idle stream", async () => {
+    const app = Fastify({ logger: false });
+    app.decorate("requireApiKey", async (request: any) => {
+      request.apiIdentity = {};
+    });
+    const gateway = {
+      // eslint-disable-next-line require-yield
+      async *stream(
+        _request: unknown,
+        _identity: unknown,
+        signal: AbortSignal,
+      ) {
+        await new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    } as unknown as GatewayService;
+    await registerOpenAiRoutes(app, {
+      gateway,
+      models: new ModelRegistry(),
+      requestTimeoutMs: 500,
+      streamIdleTimeoutMs: 10,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: "Bearer test" },
+      payload: {
+        model: "stalled",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"code":"stream_idle_timeout"');
+    expect(response.body).toContain("data: [DONE]");
+    await app.close();
+  });
 });
 
 describe("OpenAI-compatible model authorization", () => {

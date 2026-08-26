@@ -12,6 +12,24 @@ import { signSession } from "../auth/session.js";
 import { createAdapter } from "../adapters/index.js";
 import { encryptSecret } from "../utils/crypto.js";
 import { GatewayError } from "../core/errors.js";
+
+const sensitiveConfigKey =
+  /key|secret|token|password|authorization|credential/i;
+
+export function publicProviderConfig(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(publicProviderConfig);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== "headers")
+      .map(([key, item]) => [
+        key,
+        sensitiveConfigKey.test(key)
+          ? "[REDACTED]"
+          : publicProviderConfig(item),
+      ]),
+  );
+}
 export async function registerAdminRoutes(
   app: FastifyInstance,
   d: {
@@ -25,6 +43,49 @@ export async function registerAdminRoutes(
     router: RoutingEngine;
   },
 ) {
+  async function refreshModels() {
+    const rows = await d.db.query<any>(
+      `SELECT m.*,p.slug provider_slug,pr.input_per_million_usd,
+      pr.output_per_million_usd,pr.cached_input_per_million_usd
+      FROM models m JOIN providers p ON p.id=m.provider_id
+      LEFT JOIN LATERAL(
+        SELECT * FROM pricing x WHERE x.model_id=m.id AND x.effective_from<=now()
+        AND (x.effective_to IS NULL OR x.effective_to>now())
+        ORDER BY x.effective_from DESC LIMIT 1
+      ) pr ON true WHERE p.enabled`,
+    );
+    d.models.setMany(
+      rows.rows.map((model: any) => ({
+        provider: model.provider_slug,
+        id: model.upstream_id,
+        displayName: model.display_name,
+        enabled: model.enabled,
+        capabilities: {
+          ...model.capabilities,
+          contextWindow:
+            model.context_window ?? model.capabilities?.contextWindow,
+          maxOutputTokens:
+            model.max_output_tokens ?? model.capabilities?.maxOutputTokens,
+        },
+        pricing:
+          model.input_per_million_usd == null
+            ? undefined
+            : {
+                inputPerMillionUsd: Number(model.input_per_million_usd),
+                outputPerMillionUsd: Number(model.output_per_million_usd),
+                cachedInputPerMillionUsd:
+                  model.cached_input_per_million_usd == null
+                    ? undefined
+                    : Number(model.cached_input_per_million_usd),
+              },
+        metadata: {
+          ...model.metadata,
+          alias: model.alias,
+          routingPriority: model.routing_priority,
+        },
+      })),
+    );
+  }
   app.post("/api/admin/login", async (req: any, reply) => {
     const { email, password } = req.body ?? {};
     const user = await d.auth.login(String(email), String(password));
@@ -82,7 +143,10 @@ export async function registerAdminRoutes(
       const r = await d.db.query<any>(
         "SELECT id,slug,kind,display_name,base_url,enabled,config,created_at,updated_at FROM providers ORDER BY slug",
       );
-      return r.rows;
+      return r.rows.map((row: any) => ({
+        ...row,
+        config: publicProviderConfig(row.config),
+      }));
     },
   );
   app.post(
@@ -91,7 +155,24 @@ export async function registerAdminRoutes(
     async (req: any) => {
       const b = req.body ?? {};
       let encrypted = null;
-      if (b.apiKey) {
+      const headers = b.config?.headers;
+      if (
+        headers !== undefined &&
+        (!headers ||
+          typeof headers !== "object" ||
+          Array.isArray(headers) ||
+          Object.values(headers).some((value) => typeof value !== "string"))
+      ) {
+        throw new GatewayError({
+          code: "invalid_provider_headers",
+          message:
+            "Provider headers must be an object containing string values",
+          type: "client",
+          retryable: false,
+          status: 400,
+        });
+      }
+      if (b.apiKey || headers) {
         if (!d.config.MASTER_ENCRYPTION_KEY)
           throw new GatewayError({
             code: "master_key_required",
@@ -102,10 +183,12 @@ export async function registerAdminRoutes(
             status: 400,
           });
         encrypted = encryptSecret(
-          { apiKey: b.apiKey },
+          { apiKey: b.apiKey, headers },
           d.config.MASTER_ENCRYPTION_KEY,
         );
       }
+      const storedConfig = { ...(b.config ?? {}) };
+      delete storedConfig.headers;
       const r = await d.db.query<any>(
         "INSERT INTO providers(slug,kind,display_name,base_url,enabled,encrypted_credentials,config) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,slug,kind,display_name,base_url,enabled",
         [
@@ -115,7 +198,7 @@ export async function registerAdminRoutes(
           b.baseUrl,
           b.enabled !== false,
           encrypted,
-          b.config ?? {},
+          storedConfig,
         ],
       );
       d.providers.register(
@@ -144,7 +227,7 @@ export async function registerAdminRoutes(
     { preHandler: (app as any).requireAdmin },
     async (req: any) =>
       d.providers.get(req.params.slug).health({
-        signal: new AbortController().signal,
+        signal: AbortSignal.timeout(d.config.REQUEST_TIMEOUT_MS),
         requestId: crypto.randomUUID(),
       }),
   );
@@ -154,7 +237,7 @@ export async function registerAdminRoutes(
     async (req: any) => {
       const slug = req.params.slug;
       const found = await d.providers.get(slug).discoverModels({
-        signal: new AbortController().signal,
+        signal: AbortSignal.timeout(d.config.REQUEST_TIMEOUT_MS),
         requestId: crypto.randomUUID(),
       });
       const p = await d.db.query<any>(
@@ -166,19 +249,7 @@ export async function registerAdminRoutes(
           "INSERT INTO models(provider_id,upstream_id,display_name,capabilities) VALUES($1,$2,$3,$4) ON CONFLICT(provider_id,upstream_id) DO UPDATE SET display_name=EXCLUDED.display_name,capabilities=EXCLUDED.capabilities",
           [p.rows[0].id, m.id, m.displayName ?? m.id, m.capabilities],
         );
-      const rows = await d.db.query<any>(
-        "SELECT m.*,p.slug provider_slug FROM models m JOIN providers p ON p.id=m.provider_id WHERE p.enabled",
-      );
-      d.models.setMany(
-        rows.rows.map((m: any) => ({
-          provider: m.provider_slug,
-          id: m.upstream_id,
-          displayName: m.display_name,
-          enabled: m.enabled,
-          capabilities: m.capabilities,
-          metadata: { alias: m.alias, routingPriority: m.routing_priority },
-        })),
-      );
+      await refreshModels();
       return found;
     },
   );
@@ -200,6 +271,25 @@ export async function registerAdminRoutes(
       const r = await d.db.query<any>(
         "UPDATE models SET enabled=COALESCE($2,enabled),alias=COALESCE($3,alias),routing_priority=COALESCE($4,routing_priority),capabilities=COALESCE($5,capabilities) WHERE id=$1 RETURNING *",
         [req.params.id, b.enabled, b.alias, b.routingPriority, b.capabilities],
+      );
+      if (!r.rows[0]) {
+        throw new GatewayError({
+          code: "model_not_found",
+          message: "Model not found",
+          type: "client",
+          retryable: false,
+          status: 404,
+        });
+      }
+      await refreshModels();
+      await d.audit.log(
+        req.adminClaims.sub,
+        "model.update",
+        "model",
+        req.params.id,
+        "success",
+        { fields: Object.keys(b) },
+        req.ip,
       );
       return r.rows[0];
     },
@@ -244,6 +334,15 @@ export async function registerAdminRoutes(
       await d.db.query(
         "UPDATE client_api_keys SET revoked_at=now() WHERE id=$1",
         [req.params.id],
+      );
+      await d.audit.log(
+        req.adminClaims.sub,
+        "api_key.revoke",
+        "api_key",
+        req.params.id,
+        "success",
+        {},
+        req.ip,
       );
       return { ok: true };
     },

@@ -36,6 +36,15 @@ export function normalizeUnknownError(
       status: 499,
       provider,
     });
+  if (e instanceof DOMException && e.name === "TimeoutError")
+    return new GatewayError({
+      code: "request_timeout",
+      message: "Request timed out",
+      type: "timeout",
+      retryable: true,
+      status: 504,
+      provider,
+    });
   const any = e as any;
   const status = Number(any?.status || any?.statusCode || 0);
   if (status === 429)

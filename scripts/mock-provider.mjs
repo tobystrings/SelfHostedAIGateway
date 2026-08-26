@@ -3,7 +3,10 @@ import http from "node:http";
 
 const expectedAuthorization = "Bearer test";
 const server = http.createServer((request, response) => {
-  if (request.headers.authorization !== expectedAuthorization) {
+  if (
+    request.headers.authorization !== expectedAuthorization ||
+    request.headers["x-test-secret"] !== "test-header"
+  ) {
     response.writeHead(401, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: { message: "unauthorized" } }));
     return;

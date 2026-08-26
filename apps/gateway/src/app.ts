@@ -31,7 +31,12 @@ import { registerOpenAiRoutes } from "./routes/openai.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { GatewayError, normalizeUnknownError } from "./core/errors.js";
 import { verifySession } from "./auth/session.js";
-import { apiKeyHash, decryptSecret, redact } from "./utils/crypto.js";
+import {
+  apiKeyHash,
+  decryptSecret,
+  encryptSecret,
+  redact,
+} from "./utils/crypto.js";
 export interface BuildOptions {
   config?: AppConfig;
   db?: Database;
@@ -54,7 +59,17 @@ export async function buildApp(o: BuildOptions = {}) {
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin || config.corsOrigins.includes(origin)) cb(null, true);
-      else cb(new Error("Origin not allowed"), false);
+      else
+        cb(
+          new GatewayError({
+            code: "cors_origin_forbidden",
+            message: "Origin not allowed",
+            type: "auth",
+            retryable: false,
+            status: 403,
+          }),
+          false,
+        );
     },
     credentials: true,
   });
@@ -119,21 +134,35 @@ export async function buildApp(o: BuildOptions = {}) {
   try {
     const p = await db.query<any>("SELECT * FROM providers WHERE enabled");
     for (const x of p.rows) {
+      let credentials:
+        { apiKey?: string; headers?: Record<string, string> } | undefined;
       if (x.encrypted_credentials && config.MASTER_ENCRYPTION_KEY) {
-        const s = decryptSecret<{ apiKey: string }>(
-          x.encrypted_credentials,
-          config.MASTER_ENCRYPTION_KEY,
-        );
-        providers.register(
-          createAdapter({
-            id: x.slug,
-            kind: x.kind,
-            baseUrl: x.base_url,
-            apiKey: s.apiKey,
-            headers: x.config?.headers,
-          }),
+        credentials = decryptSecret<{
+          apiKey?: string;
+          headers?: Record<string, string>;
+        }>(x.encrypted_credentials, config.MASTER_ENCRYPTION_KEY);
+      }
+      if (x.config?.headers) {
+        if (!config.MASTER_ENCRYPTION_KEY) {
+          throw new Error(
+            `MASTER_ENCRYPTION_KEY is required to migrate provider ${x.slug} headers`,
+          );
+        }
+        credentials = { ...credentials, headers: x.config.headers };
+        await db.query(
+          "UPDATE providers SET encrypted_credentials=$2,config=config-'headers',updated_at=now() WHERE id=$1",
+          [x.id, encryptSecret(credentials, config.MASTER_ENCRYPTION_KEY)],
         );
       }
+      providers.register(
+        createAdapter({
+          id: x.slug,
+          kind: x.kind,
+          baseUrl: x.base_url,
+          apiKey: credentials?.apiKey,
+          headers: credentials?.headers,
+        }),
+      );
     }
     const m = await db.query<any>(
       `SELECT m.*,p.slug provider_slug,pr.input_per_million_usd,pr.output_per_million_usd,pr.cached_input_per_million_usd FROM models m JOIN providers p ON p.id=m.provider_id LEFT JOIN LATERAL(SELECT * FROM pricing x WHERE x.model_id=m.id AND x.effective_from<=now() AND (x.effective_to IS NULL OR x.effective_to>now()) ORDER BY x.effective_from DESC LIMIT 1)pr ON true WHERE p.enabled`,
