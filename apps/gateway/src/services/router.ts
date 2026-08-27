@@ -73,7 +73,11 @@ export class RoutingEngine {
     let candidates = this.models
       .list()
       .filter(
-        (model) => model.enabled && !this.breaker(model.provider).isOpen(),
+        (model) =>
+          model.enabled &&
+          model.capabilities.textInput !== false &&
+          model.capabilities.textOutput !== false &&
+          !this.breaker(model.provider).isOpen(),
       );
     if (allowedProviders?.length) {
       candidates = candidates.filter((model) =>

@@ -246,8 +246,30 @@ export async function registerAdminRoutes(
       );
       for (const m of found)
         await d.db.query(
-          "INSERT INTO models(provider_id,upstream_id,display_name,capabilities) VALUES($1,$2,$3,$4) ON CONFLICT(provider_id,upstream_id) DO UPDATE SET display_name=EXCLUDED.display_name,capabilities=EXCLUDED.capabilities",
-          [p.rows[0].id, m.id, m.displayName ?? m.id, m.capabilities],
+          `INSERT INTO models(
+            provider_id,upstream_id,display_name,enabled,capabilities,
+            context_window,max_output_tokens,metadata
+          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+          ON CONFLICT(provider_id,upstream_id) DO UPDATE SET
+            display_name=EXCLUDED.display_name,
+            capabilities=EXCLUDED.capabilities,
+            context_window=EXCLUDED.context_window,
+            max_output_tokens=EXCLUDED.max_output_tokens,
+            metadata=EXCLUDED.metadata,
+            enabled=CASE
+              WHEN EXCLUDED.enabled=false THEN false
+              ELSE models.enabled
+            END`,
+          [
+            p.rows[0].id,
+            m.id,
+            m.displayName ?? m.id,
+            m.enabled,
+            m.capabilities,
+            m.capabilities.contextWindow ?? null,
+            m.capabilities.maxOutputTokens ?? null,
+            m.metadata ?? {},
+          ],
         );
       await refreshModels();
       return found;
