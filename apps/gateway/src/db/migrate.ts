@@ -1,9 +1,9 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config.js";
 import { Database } from "./index.js";
+import { migrationChecksum } from "./migration-checksum.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDirectory = path.resolve(here, "../../../../migrations");
@@ -31,7 +31,7 @@ try {
     .sort();
   for (const name of names) {
     const sql = fs.readFileSync(path.join(migrationsDirectory, name), "utf8");
-    const checksum = crypto.createHash("sha256").update(sql).digest("hex");
+    const checksum = migrationChecksum(sql);
     const seen = await client.query<{ checksum: string | null }>(
       "SELECT checksum FROM schema_migrations WHERE name=$1",
       [name],
