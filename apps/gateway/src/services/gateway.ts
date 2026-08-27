@@ -363,8 +363,15 @@ export class GatewayService {
     const requestId = crypto.randomUUID();
     const started = performance.now();
 
-    const model = this.models.list().find((candidate) => {
+    const mode = req.routingMode ?? this.router.getDefaultMode();
+    if (!["NORMAL", "FREE_ONLY", "LOCAL_ONLY", "CHEAPEST"].includes(mode)) {
+      throw new GatewayError({ code: "invalid_routing_mode", message: "Invalid routing mode", type: "client", retryable: false, status: 400 });
+    }
+    const candidates = this.models.list().filter((candidate) => {
       if (!candidate.enabled || !candidate.capabilities.embeddings) return false;
+      if (candidate.callable === false) return false;
+      if (mode === "FREE_ONLY" && candidate.costClassification !== "free" && candidate.costClassification !== "local") return false;
+      if (mode === "LOCAL_ONLY" && candidate.costClassification !== "local") return false;
       if (req.provider && candidate.provider !== req.provider) return false;
       if (
         req.model &&
@@ -389,11 +396,20 @@ export class GatewayService {
       }
       return true;
     });
+    candidates.sort((left, right) => {
+      if (mode === "CHEAPEST") {
+        const price = (candidate: typeof left) => candidate.costClassification === "free" || candidate.costClassification === "local" ? 0 : candidate.pricing?.inputPerMillionUsd ?? Number.POSITIVE_INFINITY;
+        const difference = price(left) - price(right);
+        if (difference) return difference;
+      }
+      return Number(left.metadata?.routingPriority ?? 100) - Number(right.metadata?.routingPriority ?? 100);
+    });
+    const model = candidates[0];
 
     if (!model) {
       throw new GatewayError({
         code: 'embedding_route_not_found',
-        message: 'No embedding model found',
+        message: mode === "FREE_ONLY" ? 'No free or local embedding model found; FREE_ONLY prevented paid or unknown fallback' : 'No embedding model found',
         type: 'client',
         retryable: false,
         status: 404,
@@ -428,7 +444,7 @@ export class GatewayService {
       requestedModel: req.model,
       selectedProvider: model.provider,
       selectedModel: model.id,
-      routingReason: { mode: req.provider || req.model ? 'explicit' : 'automatic' },
+      routingReason: { mode, selection: req.provider || req.model ? 'explicit' : 'automatic' },
       streamed: false,
     });
 

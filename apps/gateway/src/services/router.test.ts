@@ -127,3 +127,56 @@ describe("routing policies", () => {
     ).toBe("preferred");
   });
 });
+
+describe("control-plane routing modes", () => {
+  const model = (id: string, costClassification: "free"|"paid"|"local"|"unknown", priority: number, extra: any = {}) => ({
+    provider: costClassification === "local" ? "ollama" : "cloud",
+    id, enabled: true, capabilities: { textInput: true, textOutput: true, ...extra.capabilities },
+    costClassification, callable: extra.callable, pricing: extra.pricing,
+    metadata: { routingPriority: priority },
+  });
+
+  it("never permits paid or unknown fallback in FREE_ONLY", () => {
+    const models = new ModelRegistry();
+    models.setMany([model("paid", "paid", 1), model("mystery", "unknown", 2)]);
+    const router = new RoutingEngine(models, new ProviderRegistry());
+    expect(() => router.route({ messages: [], routingMode: "FREE_ONLY" })).toThrow(/prevented paid or unknown fallback/);
+  });
+
+  it("supports free, local-only, and cheapest compatible selection", () => {
+    const models = new ModelRegistry();
+    models.setMany([
+      model("paid", "paid", 1, { pricing: { inputPerMillionUsd: 2, outputPerMillionUsd: 3 } }),
+      model("free", "free", 50),
+      model("local", "local", 100),
+    ]);
+    const router = new RoutingEngine(models, new ProviderRegistry());
+    expect(router.route({ messages: [], routingMode: "FREE_ONLY" }).model).toBe("free");
+    expect(router.route({ messages: [], routingMode: "LOCAL_ONLY" }).model).toBe("local");
+    expect(router.route({ messages: [], routingMode: "CHEAPEST" }).model).toBe("free");
+  });
+
+  it("keeps CHEAPEST authoritative over a model preference", () => {
+    const models = new ModelRegistry();
+    models.setMany([
+      model("expensive", "paid", 1, { pricing: { inputPerMillionUsd: 10, outputPerMillionUsd: 10 } }),
+      model("cheap", "paid", 100, { pricing: { inputPerMillionUsd: 1, outputPerMillionUsd: 1 } }),
+    ]);
+    const router = new RoutingEngine(models, new ProviderRegistry());
+    router.setPolicies([{ name: "legacy-preference", match: {}, action: { model: "expensive" } }]);
+    expect(router.route({ messages: [], routingMode: "CHEAPEST" }).model).toBe("cheap");
+  });
+
+  it("requires image capability and excludes known unavailable models", () => {
+    const models = new ModelRegistry();
+    models.setMany([
+      model("cheap-text", "free", 1),
+      model("dead-vision", "free", 2, { callable: false, capabilities: { imageInput: true } }),
+      model("vision", "paid", 50, { capabilities: { imageInput: true } }),
+    ]);
+    const router = new RoutingEngine(models, new ProviderRegistry());
+    const request = { messages: [{ role: "user" as const, content: [{ type: "image" as const, base64: "AA==", mimeType: "image/png" }] }] };
+    expect(router.route(request).model).toBe("vision");
+    expect(() => router.route({ ...request, model: "dead-vision" })).toThrow(/known to be unavailable/);
+  });
+});

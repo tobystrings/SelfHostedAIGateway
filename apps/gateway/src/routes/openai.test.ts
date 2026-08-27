@@ -140,3 +140,56 @@ describe("OpenAI-compatible model authorization", () => {
     await app.close();
   });
 });
+
+describe("OpenAI-compatible streamed tool calls", () => {
+  it("emits indexed fragmented and multiple tool calls with finish and usage", async () => {
+    const app = Fastify({ logger: false });
+    app.decorate("requireApiKey", async (request: any) => { request.apiIdentity = {}; });
+    const gateway = {
+      async *stream() {
+        yield { requestId: "req-tools", event: { type: "tool_call_delta", id: "call-1", index: 0, name: "weather", arguments: "{\"city\":" } };
+        yield { requestId: "req-tools", event: { type: "tool_call_delta", id: "call-1", index: 0, arguments: "\"Paris\"}" } };
+        yield { requestId: "req-tools", event: { type: "tool_call_delta", id: "call-2", index: 1, name: "time", arguments: "{}" } };
+        yield { requestId: "req-tools", event: { type: "finish", finishReason: "tool_calls" } };
+        yield { requestId: "req-tools", event: { type: "usage", usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } } };
+      },
+    } as unknown as GatewayService;
+    await registerOpenAiRoutes(app, { gateway, models: new ModelRegistry(), requestTimeoutMs: 1000, streamIdleTimeoutMs: 1000 });
+    const response = await app.inject({ method: "POST", url: "/v1/chat/completions", headers: { authorization: "Bearer test" }, payload: { stream: true, messages: [{ role: "user", content: "hi" }] } });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"index":0');
+    expect(response.body).toContain('"index":1');
+    expect(response.body).toContain('"name":"weather"');
+    expect(response.body).toContain('\\"Paris\\"}');
+    expect(response.body).toContain('"finish_reason":"tool_calls"');
+    expect(response.body).toContain('"total_tokens":7');
+    expect(response.body).toContain("data: [DONE]");
+    await app.close();
+  });
+
+  it("keeps ordinary text streaming unchanged", async () => {
+    const app = Fastify({ logger: false });
+    app.decorate("requireApiKey", async (request: any) => { request.apiIdentity = {}; });
+    const gateway = { async *stream() { yield { requestId: "req-text", event: { type: "text_delta", text: "hello" } }; yield { requestId: "req-text", event: { type: "finish", finishReason: "stop" } }; } } as unknown as GatewayService;
+    await registerOpenAiRoutes(app, { gateway, models: new ModelRegistry(), requestTimeoutMs: 1000, streamIdleTimeoutMs: 1000 });
+    const response = await app.inject({ method: "POST", url: "/v1/chat/completions", headers: { authorization: "Bearer test" }, payload: { stream: true, messages: [] } });
+    expect(response.body).toContain('"content":"hello"');
+    expect(response.body).toContain('"finish_reason":"stop"');
+    await app.close();
+  });
+});
+
+describe("OpenAI multimodal normalization", () => {
+  it("converts image_url blocks before invoking the gateway", async () => {
+    const app = Fastify({ logger: false });
+    app.decorate("requireApiKey", async (request: any) => { request.apiIdentity = {}; });
+    let received: any;
+    const gateway = { async chat(request: any) { received = request; return { requestId: "req", response: { provider: "p", model: "m", message: { role: "assistant", content: "ok" }, finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } } }; } } as unknown as GatewayService;
+    await registerOpenAiRoutes(app, { gateway, models: new ModelRegistry(), requestTimeoutMs: 1000, streamIdleTimeoutMs: 1000 });
+    const response = await app.inject({ method: "POST", url: "/v1/chat/completions", headers: { authorization: "Bearer test", "x-gateway-routing-mode": "FREE_ONLY" }, payload: { messages: [{ role: "user", content: [{ type: "text", text: "look" }, { type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } }] }] } });
+    expect(response.statusCode).toBe(200);
+    expect(received.routingMode).toBe("FREE_ONLY");
+    expect(received.messages[0].content[1]).toEqual({ type: "image", url: "data:image/png;base64,YQ==" });
+    await app.close();
+  });
+});

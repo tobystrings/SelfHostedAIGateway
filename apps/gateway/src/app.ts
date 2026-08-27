@@ -190,6 +190,10 @@ export async function buildApp(o: BuildOptions = {}) {
                     ? undefined
                     : Number(x.cached_input_per_million_usd),
               },
+        costClassification: x.cost_classification,
+        verificationStatus: x.verification_status,
+        verifiedAt: x.verified_at?.toISOString?.() ?? x.verified_at,
+        callable: x.callable,
         metadata: {
           ...x.metadata,
           alias: x.alias,
@@ -201,6 +205,8 @@ export async function buildApp(o: BuildOptions = {}) {
       "SELECT * FROM routing_policies WHERE enabled ORDER BY priority",
     );
     router.setPolicies(rp.rows);
+    const settings = await db.query<any>("SELECT default_routing_mode FROM gateway_settings WHERE singleton=true");
+    if (settings.rows[0]?.default_routing_mode) router.setDefaultMode(settings.rows[0].default_routing_mode);
   } catch (e) {
     if (config.NODE_ENV === "production") throw e;
     app.log.warn({ err: redact(e) }, "state load failed");
@@ -297,7 +303,9 @@ export async function buildApp(o: BuildOptions = {}) {
   );
   app.addHook("onResponse", async (req: any, reply) => {
     count.inc({ method: req.method, status: String(reply.statusCode) });
-    duration.observe((performance.now() - req.metricStart) / 1000);
+    if (Number.isFinite(req.metricStart)) {
+      duration.observe((performance.now() - req.metricStart) / 1000);
+    }
   });
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/ready", async (_q, r) => {

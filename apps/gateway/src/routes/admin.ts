@@ -12,6 +12,8 @@ import { signSession } from "../auth/session.js";
 import { createAdapter } from "../adapters/index.js";
 import { encryptSecret } from "../utils/crypto.js";
 import { GatewayError } from "../core/errors.js";
+import type { RoutingMode } from "../core/types.js";
+import { verifyModelInvocation } from "../services/model-verification.js";
 
 const sensitiveConfigKey =
   /key|secret|token|password|authorization|credential/i;
@@ -78,6 +80,10 @@ export async function registerAdminRoutes(
                     ? undefined
                     : Number(model.cached_input_per_million_usd),
               },
+        costClassification: model.cost_classification,
+        verificationStatus: model.verification_status,
+        verifiedAt: model.verified_at?.toISOString?.() ?? model.verified_at,
+        callable: model.callable,
         metadata: {
           ...model.metadata,
           alias: model.alias,
@@ -85,6 +91,25 @@ export async function registerAdminRoutes(
         },
       })),
     );
+  }
+  async function verifyModel(id: string) {
+    const result = await d.db.query<any>(
+      `SELECT m.*,p.slug provider_slug FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.id=$1`,
+      [id],
+    );
+    const model = result.rows[0];
+    if (!model) throw new GatewayError({ code: "model_not_found", message: "Model not found", type: "client", retryable: false, status: 404 });
+    const verification = await verifyModelInvocation(
+      d.providers.get(model.provider_slug),
+      { provider: model.provider_slug, id: model.upstream_id, enabled: model.enabled, capabilities: model.capabilities, callable: model.callable },
+      AbortSignal.timeout(d.config.REQUEST_TIMEOUT_MS),
+    );
+    const updated = await d.db.query<any>(
+      `UPDATE models SET verification_status=$2,verified_at=now(),verification_error_category=$3,callable=$4 WHERE id=$1 RETURNING *`,
+      [id, verification.status, verification.errorCategory, verification.callable],
+    );
+    await refreshModels();
+    return updated.rows[0];
   }
   app.post("/api/admin/login", async (req: any, reply) => {
     const { email, password } = req.body ?? {};
@@ -141,7 +166,14 @@ export async function registerAdminRoutes(
     { preHandler: (app as any).requireAdmin },
     async () => {
       const r = await d.db.query<any>(
-        "SELECT id,slug,kind,display_name,base_url,enabled,config,created_at,updated_at FROM providers ORDER BY slug",
+        `SELECT p.id,p.slug,p.kind,p.display_name,p.base_url,p.enabled,p.config,p.created_at,p.updated_at,
+          COALESCE(v.total,0)::int model_count,COALESCE(v.verified,0)::int verified_count,
+          COALESCE(v.unavailable,0)::int unavailable_count
+         FROM providers p LEFT JOIN LATERAL (
+           SELECT count(*) total,count(*) FILTER(WHERE verification_status='verified') verified,
+             count(*) FILTER(WHERE verification_status IN ('unavailable','unauthorized')) unavailable
+           FROM models m WHERE m.provider_id=p.id
+         ) v ON true ORDER BY p.slug`,
       );
       return r.rows.map((row: any) => ({
         ...row,
@@ -275,6 +307,17 @@ export async function registerAdminRoutes(
       return found;
     },
   );
+  app.post(
+    "/api/admin/providers/:slug/verify",
+    { preHandler: (app as any).requireAdmin },
+    async (req: any) => {
+      const rows = await d.db.query<any>(`SELECT m.id FROM models m JOIN providers p ON p.id=m.provider_id WHERE p.slug=$1 ORDER BY m.upstream_id`, [req.params.slug]);
+      const verified = [];
+      for (const model of rows.rows) verified.push(await verifyModel(model.id));
+      await d.audit.log(req.adminClaims.sub, "provider.models.verify", "provider", req.params.slug, "success", { count: verified.length }, req.ip);
+      return verified;
+    },
+  );
   app.get(
     "/api/admin/models",
     { preHandler: (app as any).requireAdmin },
@@ -291,8 +334,8 @@ export async function registerAdminRoutes(
     async (req: any) => {
       const b = req.body ?? {};
       const r = await d.db.query<any>(
-        "UPDATE models SET enabled=COALESCE($2,enabled),alias=COALESCE($3,alias),routing_priority=COALESCE($4,routing_priority),capabilities=COALESCE($5,capabilities) WHERE id=$1 RETURNING *",
-        [req.params.id, b.enabled, b.alias, b.routingPriority, b.capabilities],
+        "UPDATE models SET enabled=COALESCE($2,enabled),alias=COALESCE($3,alias),routing_priority=COALESCE($4,routing_priority),capabilities=COALESCE($5,capabilities),cost_classification=COALESCE($6,cost_classification) WHERE id=$1 RETURNING *",
+        [req.params.id, b.enabled, b.alias, b.routingPriority, b.capabilities, b.costClassification],
       );
       if (!r.rows[0]) {
         throw new GatewayError({
@@ -314,6 +357,15 @@ export async function registerAdminRoutes(
         req.ip,
       );
       return r.rows[0];
+    },
+  );
+  app.post(
+    "/api/admin/models/:id/verify",
+    { preHandler: (app as any).requireAdmin },
+    async (req: any) => {
+      const model = await verifyModel(req.params.id);
+      await d.audit.log(req.adminClaims.sub, "model.verify", "model", req.params.id, "success", { status: model.verification_status }, req.ip);
+      return model;
     },
   );
   app.get(
@@ -389,7 +441,19 @@ export async function registerAdminRoutes(
         d.db.query("SELECT * FROM budgets ORDER BY name"),
         d.db.query("SELECT * FROM rate_limit_policies ORDER BY name"),
       ]);
-      return { policies: p.rows, budgets: b.rows, rateLimits: l.rows };
+      return { policies: p.rows, budgets: b.rows, rateLimits: l.rows, defaultMode: d.router.getDefaultMode() };
+    },
+  );
+  app.patch(
+    "/api/admin/routing/default-mode",
+    { preHandler: (app as any).requireAdmin },
+    async (req: any) => {
+      const mode = req.body?.mode as RoutingMode;
+      if (!["NORMAL", "FREE_ONLY", "LOCAL_ONLY", "CHEAPEST"].includes(mode)) throw new GatewayError({ code: "invalid_routing_mode", message: "Invalid routing mode", type: "client", retryable: false, status: 400 });
+      await d.db.query("UPDATE gateway_settings SET default_routing_mode=$1,updated_at=now() WHERE singleton=true", [mode]);
+      d.router.setDefaultMode(mode);
+      await d.audit.log(req.adminClaims.sub, "routing.default_mode.update", "gateway_settings", "default", "success", { mode }, req.ip);
+      return { defaultMode: mode };
     },
   );
   app.post(

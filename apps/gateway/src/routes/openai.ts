@@ -4,11 +4,32 @@ import type { ModelRegistry } from "../services/model-registry.js";
 import type { ChatRequest, Message } from "../core/types.js";
 import { GatewayError, normalizeUnknownError } from "../core/errors.js";
 
-function normalized(body: any): ChatRequest {
+function normalizeMessage(message: any): Message {
+  if (!Array.isArray(message.content)) return message as Message;
+  return {
+    ...message,
+    content: message.content.map((block: any) => {
+      if (block.type === "text" || block.type === "input_text") return { type: "text", text: String(block.text ?? "") };
+      if (block.type === "image") return block;
+      if (block.type === "image_url") {
+        const url = typeof block.image_url === "string" ? block.image_url : block.image_url?.url;
+        return { type: "image", url, mimeType: block.image_url?.mime_type };
+      }
+      if (block.type === "input_image") return { type: "image", url: block.image_url, base64: block.image_base64, mimeType: block.mime_type };
+      throw new GatewayError({ code: "unsupported_content_block", message: `Unsupported message content block: ${String(block.type)}`, type: "client", retryable: false, status: 400 });
+    }),
+  };
+}
+
+function normalized(body: any, routingModeHeader?: unknown): ChatRequest {
+  const routingMode = routingModeHeader ?? body.routing_mode ?? body.gateway?.routing_mode;
+  if (routingMode !== undefined && !["NORMAL", "FREE_ONLY", "LOCAL_ONLY", "CHEAPEST"].includes(String(routingMode))) {
+    throw new GatewayError({ code: "invalid_routing_mode", message: "routing mode must be NORMAL, FREE_ONLY, LOCAL_ONLY, or CHEAPEST", type: "client", retryable: false, status: 400 });
+  }
   return {
     provider: body.provider,
     model: body.model,
-    messages: (body.messages ?? []) as Message[],
+    messages: (body.messages ?? []).map(normalizeMessage),
     stream: !!body.stream,
     temperature: body.temperature,
     maxOutputTokens: body.max_tokens ?? body.max_completion_tokens,
@@ -26,6 +47,7 @@ function normalized(body: any): ChatRequest {
             strict: body.response_format.json_schema?.strict,
           }
         : undefined,
+    routingMode: routingMode as ChatRequest["routingMode"],
   };
 }
 
@@ -100,6 +122,8 @@ export async function registerOpenAiRoutes(
           gateway: {
             provider: model.provider,
             capabilities: model.capabilities,
+            cost_classification: model.costClassification ?? "unknown",
+            verification_status: model.verificationStatus ?? "unverified",
           },
         })),
     }),
@@ -109,7 +133,7 @@ export async function registerOpenAiRoutes(
     "/v1/chat/completions",
     { preHandler: (app as any).requireApiKey },
     async (request: any, reply) => {
-      const body = normalized(request.body);
+      const body = normalized(request.body, request.headers["x-gateway-routing-mode"]);
       const cancellation = requestCancellation(
         request,
         reply,
@@ -152,6 +176,11 @@ export async function registerOpenAiRoutes(
               if (event.type === "text_delta") {
                 reply.raw.write(
                   `data: ${JSON.stringify({ id: item.requestId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: event.text }, finish_reason: null }] })}\n\n`,
+                );
+              }
+              if (event.type === "tool_call_delta") {
+                reply.raw.write(
+                  `data: ${JSON.stringify({ id: item.requestId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: event.index ?? 0, ...(event.id ? { id: event.id } : {}), type: "function", function: { ...(event.name ? { name: event.name } : {}), ...(event.arguments !== undefined ? { arguments: event.arguments } : {}) } }] }, finish_reason: null }] })}\n\n`,
                 );
               }
               if (event.type === "finish") {
@@ -238,7 +267,7 @@ export async function registerOpenAiRoutes(
       );
       try {
         const { response } = await deps.gateway.embeddings(
-          { provider: body.provider, model: body.model, input: body.input },
+          { provider: body.provider, model: body.model, input: body.input, routingMode: request.headers["x-gateway-routing-mode"] ?? body.routing_mode ?? body.gateway?.routing_mode },
           request.apiIdentity,
           cancellation.controller.signal,
         );

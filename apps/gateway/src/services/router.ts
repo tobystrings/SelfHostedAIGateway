@@ -1,4 +1,4 @@
-import type { ChatRequest, GatewayModel } from "../core/types.js";
+import type { ChatRequest, GatewayModel, RoutingMode } from "../core/types.js";
 import { GatewayError } from "../core/errors.js";
 import { CircuitBreaker } from "../core/circuit.js";
 import type { ModelRegistry } from "./model-registry.js";
@@ -46,6 +46,7 @@ function policyMatches(policy: RoutingPolicy, request: ChatRequest) {
 export class RoutingEngine {
   private breakers = new Map<string, CircuitBreaker>();
   private policies: RoutingPolicy[] = [];
+  private defaultMode: RoutingMode = "NORMAL";
 
   constructor(
     private models: ModelRegistry,
@@ -55,6 +56,9 @@ export class RoutingEngine {
   setPolicies(policies: RoutingPolicy[]) {
     this.policies = policies;
   }
+
+  setDefaultMode(mode: RoutingMode) { this.defaultMode = mode; }
+  getDefaultMode() { return this.defaultMode; }
 
   breaker(provider: string) {
     let breaker = this.breakers.get(provider);
@@ -70,6 +74,15 @@ export class RoutingEngine {
     allowedProviders?: string[],
     allowedModels?: string[],
   ): RouteDecision {
+    const explicit = Boolean(request.provider || request.model);
+    const explicitModel = Boolean(request.model);
+    const mode = request.routingMode ?? this.defaultMode;
+    if (!["NORMAL", "FREE_ONLY", "LOCAL_ONLY", "CHEAPEST"].includes(mode)) {
+      throw new GatewayError({ code: "invalid_routing_mode", message: "Invalid routing mode", type: "client", retryable: false, status: 400 });
+    }
+    const hasImages = request.messages.some((message) =>
+      Array.isArray(message.content) && message.content.some((block) => block.type === "image"),
+    );
     let candidates = this.models
       .list()
       .filter(
@@ -117,6 +130,26 @@ export class RoutingEngine {
         (model) => model.capabilities.streaming !== false,
       );
     }
+    if (explicitModel && candidates.some((model) => model.callable === false)) {
+      throw new GatewayError({
+        code: "model_unavailable",
+        message: "The explicitly requested model is known to be unavailable",
+        type: "unavailable",
+        retryable: false,
+        status: 503,
+      });
+    }
+    candidates = candidates.filter((model) => model.callable !== false);
+    if (hasImages) {
+      candidates = candidates.filter((model) => model.capabilities.imageInput === true);
+    }
+    if (mode === "FREE_ONLY") {
+      candidates = candidates.filter((model) =>
+        model.costClassification === "free" || model.costClassification === "local",
+      );
+    } else if (mode === "LOCAL_ONLY") {
+      candidates = candidates.filter((model) => model.costClassification === "local");
+    }
 
     const matchedPolicies = this.policies.filter((policy) =>
       policyMatches(policy, request),
@@ -133,6 +166,15 @@ export class RoutingEngine {
       (policy) => policy.action?.model,
     )?.action?.model;
     candidates.sort((left, right) => {
+      if (mode === "CHEAPEST") {
+        const price = (model: GatewayModel) => {
+          if (model.costClassification === "free" || model.costClassification === "local") return 0;
+          if (!model.pricing) return Number.POSITIVE_INFINITY;
+          return model.pricing.inputPerMillionUsd + model.pricing.outputPerMillionUsd;
+        };
+        const priceDifference = price(left) - price(right);
+        if (priceDifference) return priceDifference;
+      }
       if (preferredModel) {
         const leftPreferred =
           left.id === preferredModel || left.metadata?.alias === preferredModel;
@@ -148,9 +190,16 @@ export class RoutingEngine {
     });
 
     if (!candidates.length) {
+      const message = mode === "FREE_ONLY"
+        ? "No free or local compatible model is routable; FREE_ONLY prevented paid or unknown fallback"
+        : mode === "LOCAL_ONLY"
+          ? "No compatible local model is routable"
+          : hasImages
+            ? "No image-capable model is currently routable"
+            : "No compatible model is currently routable";
       throw new GatewayError({
         code: "no_route",
-        message: "No compatible model is currently routable",
+        message,
         type: "unavailable",
         retryable: true,
         status: 503,
@@ -161,7 +210,8 @@ export class RoutingEngine {
       model: candidates[0]!.id,
       candidates,
       reason: {
-        mode: request.provider || request.model ? "explicit" : "automatic",
+        mode,
+        selection: explicit ? "explicit" : "automatic",
         policies: matchedPolicies.map((policy) => policy.name).filter(Boolean),
         candidates: candidates.map((model) => `${model.provider}/${model.id}`),
       },

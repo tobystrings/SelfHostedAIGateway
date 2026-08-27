@@ -89,6 +89,7 @@ describe("production state restoration", () => {
         }
         if (sql.includes("SELECT m.*")) return { rows: [] };
         if (sql.includes("SELECT * FROM routing_policies")) return { rows: [] };
+        if (sql.includes("SELECT default_routing_mode")) return { rows: [] };
         throw new Error(`Unexpected query: ${sql}`);
       },
     } as unknown as Database;
