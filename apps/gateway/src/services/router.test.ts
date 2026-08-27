@@ -24,6 +24,40 @@ describe("router", () => {
       r.route({ messages: [], tools: [{ name: "x", parameters: {} }] }).model,
     ).toBe("tools");
   });
+
+  it("does not route embedding-only models into chat", () => {
+    const models = new ModelRegistry();
+    models.setMany([
+      {
+        provider: "gemini",
+        id: "gemini-embedding-001",
+        enabled: true,
+        capabilities: {
+          textInput: true,
+          textOutput: false,
+          embeddings: true,
+        },
+        metadata: { routingPriority: 1 },
+      },
+      {
+        provider: "gemini",
+        id: "gemini-3.7-flash",
+        enabled: true,
+        capabilities: {
+          textInput: true,
+          textOutput: true,
+          embeddings: false,
+        },
+        metadata: { routingPriority: 100 },
+      },
+    ]);
+
+    const router = new RoutingEngine(models, new ProviderRegistry());
+    expect(router.route({ messages: [] }).model).toBe("gemini-3.7-flash");
+    expect(() =>
+      router.route({ messages: [], model: "gemini-embedding-001" }),
+    ).toThrow(/No compatible model/);
+  });
 });
 
 describe("routing policies", () => {
