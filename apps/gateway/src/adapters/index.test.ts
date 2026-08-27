@@ -114,6 +114,7 @@ describe("Gemini model discovery", () => {
       capabilities: {
         textInput: true,
         textOutput: true,
+        imageInput: true,
         streaming: true,
         embeddings: false,
         contextWindow: 1048576,
@@ -140,5 +141,48 @@ describe("Gemini model discovery", () => {
       enabled: false,
       capabilities: { textOutput: false, embeddings: false },
     });
+  });
+});
+
+describe("OpenAI-compatible capability discovery", () => {
+  it("defaults to conservative capabilities and honors explicit upstream declarations", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "ordinary-model" },
+      { id: "text-embedding-3-small" },
+      { id: "declared-vision", capabilities: { imageInput: true, toolCalling: true } },
+    ] }), { status: 200 })));
+    const adapter = createAdapter({ id: "compatible", kind: "openai-compatible", baseUrl: "https://example.invalid/v1" });
+    const models = await adapter.discoverModels({ signal: new AbortController().signal, requestId: "test" });
+    expect(models[0]?.capabilities).toMatchObject({ textOutput: true, imageInput: false, toolCalling: false, embeddings: false });
+    expect(models[1]?.capabilities).toMatchObject({ textOutput: false, embeddings: true });
+    expect(models[2]?.capabilities).toMatchObject({ imageInput: true, toolCalling: true });
+  });
+});
+
+describe("Gemini multimodal translation", () => {
+  it("preserves system text and sends mixed text and base64 image parts", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }], usageMetadata: {} }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdapter({ id: "gemini", kind: "gemini", baseUrl: "https://example.invalid/v1beta" });
+    await adapter.chat({
+      model: "gemini-3.7-flash",
+      messages: [
+        { role: "system", content: "Follow the policy" },
+        { role: "developer", content: "Be concise" },
+        { role: "user", content: [{ type: "text", text: "What is this?" }, { type: "image", base64: "aW1hZ2U=", mimeType: "image/png" }] },
+      ],
+    }, { signal: new AbortController().signal, requestId: "test" });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
+    expect(body.systemInstruction.parts[0].text).toBe("Follow the policy\nBe concise");
+    expect(body.contents[0].parts).toEqual([{ text: "What is this?" }, { inlineData: { mimeType: "image/png", data: "aW1hZ2U=" } }]);
+  });
+
+  it("accepts data image URLs and rejects unsupported remote URLs clearly", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ candidates: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdapter({ id: "gemini", kind: "gemini", baseUrl: "https://example.invalid/v1beta" });
+    await adapter.chat({ model: "m", messages: [{ role: "user", content: [{ type: "image", url: "data:image/webp;base64,YQ==" }] }] }, { signal: new AbortController().signal, requestId: "test" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)).contents[0].parts[0]).toEqual({ inlineData: { mimeType: "image/webp", data: "YQ==" } });
+    await expect(adapter.chat({ model: "m", messages: [{ role: "user", content: [{ type: "image", url: "https://example.com/image.png" }] }] }, { signal: new AbortController().signal, requestId: "test" })).rejects.toThrow(/requires base64/);
   });
 });

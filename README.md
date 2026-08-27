@@ -60,6 +60,30 @@ flowchart TD
 
 The gateway supports explicit provider/model selection and deterministic automatic routing. Automatic selection filters by required capabilities, provider/model access restrictions, health, and configured priority. Retry/fallback is conservative: tool requests and partially streamed responses are not blindly replayed.
 
+Routing modes can be selected as the Admin default or per request with the
+`X-Gateway-Routing-Mode` header (or `routing_mode` request field):
+
+- `NORMAL` preserves policy/priority routing.
+- `FREE_ONLY` permits only models explicitly classified `free` or `local` and never falls through to `paid` or `unknown`.
+- `LOCAL_ONLY` permits only `local` models.
+- `CHEAPEST` prefers the lowest known compatible price; unknown pricing never outranks known-free models.
+
+Cost classification is an administrative billing assertion, not an inference
+from consumer subscriptions. Classify a model as `free` only after confirming
+that the configured provider API account is eligible for a free API tier.
+
+## Model verification and multimodal input
+
+Provider discovery records advertised models; Admin **Verify** performs a
+minimal capability-appropriate live invocation and stores its sanitized status.
+Automatic routing excludes models known unavailable, while a temporary rate
+limit does not permanently disable them.
+
+Chat messages accept OpenAI `image_url` content blocks. Gemini supports base64,
+data URLs, and Gemini Files URIs; arbitrary remote URLs are rejected rather than
+silently discarded. Image requests are routed only to models whose stored
+capabilities explicitly include `imageInput`.
+
 ## Budgets and usage
 
 Usage records track input/output/cached/reasoning tokens, model/provider, estimated cost, API key/user, request ID, and timestamps. Budget checks reserve estimated spend/tokens before upstream invocation and reconcile afterward.

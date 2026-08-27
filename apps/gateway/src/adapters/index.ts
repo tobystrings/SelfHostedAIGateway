@@ -27,6 +27,12 @@ const text = (m: Message) =>
         .filter((x) => x.type === "text")
         .map((x) => (x as any).text)
         .join("\n");
+function imageData(block: { url?: string; base64?: string; mimeType?: string }) {
+  if (block.base64) return { data: block.base64, mimeType: block.mimeType ?? "image/jpeg" };
+  const match = block.url?.match(/^data:([^;,]+);base64,(.+)$/s);
+  if (match) return { mimeType: match[1]!, data: match[2]! };
+  return undefined;
+}
 function usage(input = 0, output = 0, cached = 0, reasoning = 0): Usage {
   return {
     inputTokens: input,
@@ -77,20 +83,26 @@ class OpenAICompatibleAdapter implements ProviderAdapter {
       this.id,
     );
     const j: any = await r.json();
-    return (j.data ?? j.models ?? []).map((m: any) => ({
-      provider: this.id,
-      id: m.id ?? m.name,
-      displayName: m.id ?? m.name,
-      enabled: true,
-      capabilities: {
-        textInput: true,
-        textOutput: true,
-        streaming: true,
-        toolCalling: true,
-        structuredOutput: true,
-        embeddings: true,
-      },
-    }));
+    return (j.data ?? j.models ?? []).map((m: any) => {
+      const id = String(m.id ?? m.name);
+      const embedding = /(?:^|[-_.])embed(?:ding)?(?:[-_.]|$)/i.test(id);
+      const declared = m.capabilities && typeof m.capabilities === "object" ? m.capabilities : {};
+      return {
+        provider: this.id,
+        id,
+        displayName: m.id ?? m.name,
+        enabled: true,
+        capabilities: {
+          textInput: declared.textInput ?? true,
+          textOutput: declared.textOutput ?? !embedding,
+          streaming: declared.streaming ?? !embedding,
+          toolCalling: declared.toolCalling ?? false,
+          structuredOutput: declared.structuredOutput ?? false,
+          imageInput: declared.imageInput ?? false,
+          embeddings: declared.embeddings ?? embedding,
+        },
+      };
+    });
   }
   private body(req: ChatRequest, stream = false) {
     const messages = req.messages.map((m) => ({
@@ -201,6 +213,7 @@ class OpenAICompatibleAdapter implements ProviderAdapter {
     const reader = r.body.getReader(),
       dec = new TextDecoder();
     let buf = "";
+    const toolIds = new Map<number, string>();
     yield { type: "start", id: crypto.randomUUID(), model: req.model ?? "" };
     while (true) {
       const { done, value } = await reader.read();
@@ -222,13 +235,17 @@ class OpenAICompatibleAdapter implements ProviderAdapter {
         const c = j.choices?.[0];
         if (c?.delta?.content)
           yield { type: "text_delta", text: c.delta.content };
-        for (const t of c?.delta?.tool_calls ?? [])
+        for (const t of c?.delta?.tool_calls ?? []) {
+          const index = Number(t.index ?? 0);
+          if (t.id) toolIds.set(index, t.id);
           yield {
             type: "tool_call_delta",
-            id: t.id ?? String(t.index),
+            id: toolIds.get(index) ?? String(index),
+            index,
             name: t.function?.name,
             arguments: t.function?.arguments,
           };
+        }
         if (c?.finish_reason)
           yield { type: "finish", finishReason: c.finish_reason };
         if (j.usage)
@@ -314,7 +331,7 @@ class AnthropicAdapter implements ProviderAdapter {
       capabilities: {
         textInput: true,
         textOutput: true,
-        imageInput: true,
+        imageInput: false,
         streaming: true,
         toolCalling: true,
         structuredOutput: false,
@@ -402,6 +419,7 @@ class AnthropicAdapter implements ProviderAdapter {
       dec = new TextDecoder();
     let buf = "";
     let final: Usage = usage();
+    const toolIds = new Map<number, string>();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -419,10 +437,16 @@ class AnthropicAdapter implements ProviderAdapter {
         }
         if (j.type === "content_block_delta" && j.delta?.type === "text_delta")
           yield { type: "text_delta", text: j.delta.text };
+        if (j.type === "content_block_start" && j.content_block?.type === "tool_use") {
+          toolIds.set(j.index, j.content_block.id);
+          yield { type: "tool_call_delta", id: j.content_block.id, index: j.index, name: j.content_block.name, arguments: "" };
+        }
+        if (j.type === "content_block_delta" && j.delta?.type === "input_json_delta")
+          yield { type: "tool_call_delta", id: toolIds.get(j.index) ?? String(j.index), index: j.index, arguments: j.delta.partial_json ?? "" };
         if (j.type === "message_delta" && j.usage)
           final = usage(0, j.usage.output_tokens ?? 0);
-        if (j.type === "message_stop")
-          yield { type: "finish", finishReason: "stop" };
+        if (j.type === "message_delta" && j.delta?.stop_reason)
+          yield { type: "finish", finishReason: j.delta.stop_reason === "tool_use" ? "tool_calls" : "stop" };
       }
     }
     yield { type: "usage", usage: final };
@@ -486,6 +510,7 @@ class GeminiAdapter implements ProviderAdapter {
         methods.has("batchEmbedContent");
       const specialized = geminiSpecializedModel.test(id);
       const generatesText = methods.has("generateContent") && !specialized;
+      const acceptsImages = generatesText && /^gemini-(?:2\.5|3(?:\.|-))/i.test(id);
       const enabled = generatesText || embeds;
       return {
         provider: this.id,
@@ -495,6 +520,7 @@ class GeminiAdapter implements ProviderAdapter {
         capabilities: {
           textInput: enabled,
           textOutput: generatesText,
+          imageInput: acceptsImages,
           streaming: generatesText,
           toolCalling: generatesText,
           structuredOutput: generatesText,
@@ -514,12 +540,31 @@ class GeminiAdapter implements ProviderAdapter {
     });
   }
   private body(req: ChatRequest) {
+    const parts = (message: Message) => {
+      if (typeof message.content === "string") return [{ text: message.content }];
+      return message.content.map((block) => {
+        if (block.type === "text") return { text: block.text };
+        const inline = imageData(block);
+        if (inline) return { inlineData: { mimeType: inline.mimeType, data: inline.data } };
+        if (block.url?.startsWith("gs://") || block.url?.startsWith("https://generativelanguage.googleapis.com/")) {
+          return { fileData: { mimeType: block.mimeType ?? "image/jpeg", fileUri: block.url } };
+        }
+        throw new GatewayError({
+          code: "unsupported_gemini_image_url",
+          message: "Gemini image input requires base64, a data URL, or a Gemini Files URI",
+          type: "client",
+          retryable: false,
+          status: 400,
+          provider: this.id,
+        });
+      });
+    };
     return {
       contents: req.messages
         .filter((m) => !["system", "developer"].includes(m.role))
         .map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
-          parts: [{ text: text(m) }],
+          parts: parts(m),
         })),
       systemInstruction: {
         parts: [
@@ -617,6 +662,7 @@ class GeminiAdapter implements ProviderAdapter {
       dec = new TextDecoder();
     let buf = "";
     let u = usage();
+    let emittedToolCall = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -632,8 +678,17 @@ class GeminiAdapter implements ProviderAdapter {
         } catch {
           continue;
         }
-        for (const p of j.candidates?.[0]?.content?.parts ?? [])
+        for (const [index, p] of (j.candidates?.[0]?.content?.parts ?? []).entries()) {
           if (p.text) yield { type: "text_delta", text: p.text };
+          if (p.functionCall) yield {
+            type: "tool_call_delta",
+            id: `gemini-${index}`,
+            index,
+            name: p.functionCall.name,
+            arguments: JSON.stringify(p.functionCall.args ?? {}),
+          };
+          if (p.functionCall) emittedToolCall = true;
+        }
         if (j.usageMetadata)
           u = usage(
             j.usageMetadata.promptTokenCount ?? 0,
@@ -642,7 +697,7 @@ class GeminiAdapter implements ProviderAdapter {
           );
       }
     }
-    yield { type: "finish", finishReason: "stop" };
+    yield { type: "finish", finishReason: emittedToolCall ? "tool_calls" : "stop" };
     yield { type: "usage", usage: u };
   }
   async embeddings(req: EmbeddingRequest, ctx: ProviderContext) {
