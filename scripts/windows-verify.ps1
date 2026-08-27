@@ -51,7 +51,7 @@ if (-not (Test-Path ".env")) {
     [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
     $adminPassword = [Convert]::ToBase64String($bytes).Replace("/","_").Replace("+","-").TrimEnd("=")
     $text = Get-Content ".env" -Raw
-    $text = $text -replace 'POSTGRES_PASSWORD=change-me-now', "POSTGRES_PASSWORD=$pg"
+    $text = $text -replace 'POSTGRES_PASSWORD=replace-with-a-strong-random-password', "POSTGRES_PASSWORD=$pg"
     $text = $text -replace 'MASTER_ENCRYPTION_KEY=', "MASTER_ENCRYPTION_KEY=$master"
     $text = $text -replace 'SESSION_SECRET=change-this-to-a-long-random-secret', "SESSION_SECRET=$session"
     $text = $text -replace 'BOOTSTRAP_ADMIN_PASSWORD=change-this-immediately', "BOOTSTRAP_ADMIN_PASSWORD=$adminPassword"
@@ -87,7 +87,7 @@ Write-Step "Waiting for health"
 $healthy = $false
 for ($i = 0; $i -lt 30; $i++) {
     try {
-        $response = Invoke-RestMethod -Uri "http://localhost:8080/health" -TimeoutSec 3
+        $response = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 3
         if ($response.status -eq "ok") {
             $healthy = $true
             break
@@ -102,5 +102,11 @@ if (-not $healthy) {
 }
 
 Write-Step "Ready"
-Invoke-RestMethod -Uri "http://localhost:8080/ready" | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/ready" | ConvertTo-Json -Depth 5
+
+Write-Step "Authentication and API smoke tests"
+& (Join-Path $PSScriptRoot "api-smoke.ps1")
+
+Write-Step "Provider persistence, streaming, and embeddings"
+& (Join-Path $PSScriptRoot "provider-persistence-smoke.ps1")
 Write-Host "Verification completed." -ForegroundColor Green

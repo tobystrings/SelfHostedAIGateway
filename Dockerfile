@@ -20,4 +20,4 @@ COPY --from=build /app/apps/admin/dist apps/admin/dist
 COPY migrations migrations
 USER node
 EXPOSE 8080
-CMD ["sh", "-c", "node apps/gateway/dist/db/migrate.js && node apps/gateway/dist/server.js"]
+CMD ["sh", "-c", "node apps/gateway/dist/db/migrate.js && exec node apps/gateway/dist/server.js"]
