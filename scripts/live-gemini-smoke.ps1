@@ -39,7 +39,7 @@ $chat = Invoke-RestMethod "$base/api/admin/playground/chat" -Method Post `
         provider = $Provider
         model = $Model
         messages = @(@{ role = "user"; content = "Reply with exactly LIVE_OK" })
-        maxOutputTokens = 8
+        maxOutputTokens = 128
     } | ConvertTo-Json -Depth 5)
 
 [pscustomobject]@{
@@ -48,5 +48,7 @@ $chat = Invoke-RestMethod "$base/api/admin/playground/chat" -Method Post `
     callable = $verified.callable
     playgroundProvider = $chat.response.provider
     playgroundModel = $chat.response.model
+    playgroundAnswered = -not [string]::IsNullOrWhiteSpace([string]$chat.response.message.content)
     playgroundReplyMatches = ([string]$chat.response.message.content) -match "LIVE_OK"
 } | ConvertTo-Json -Compress
+
