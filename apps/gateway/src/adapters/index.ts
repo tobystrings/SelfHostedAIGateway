@@ -448,6 +448,9 @@ class AnthropicAdapter implements ProviderAdapter {
   }
 }
 
+const geminiSpecializedModel =
+  /(embedding|image|nano-banana|tts|audio|transcribe|live|veo|lyria|robotics|computer-use|deep-research)/i;
+
 class GeminiAdapter implements ProviderAdapter {
   kind = "gemini";
   constructor(
@@ -470,21 +473,45 @@ class GeminiAdapter implements ProviderAdapter {
       this.id,
     );
     const j: any = await r.json();
-    return (j.models ?? []).map((m: any) => ({
-      provider: this.id,
-      id: String(m.name).replace(/^models\//, ""),
-      displayName: m.displayName,
-      enabled: true,
-      capabilities: {
-        textInput: true,
-        textOutput: true,
-        imageInput: true,
-        streaming: true,
-        toolCalling: true,
-        structuredOutput: true,
-        embeddings: true,
-      },
-    }));
+    return (j.models ?? []).map((m: any) => {
+      const id = String(m.name).replace(/^models\//, "");
+      const methods = new Set<string>(
+        Array.isArray(m.supportedGenerationMethods)
+          ? m.supportedGenerationMethods.map(String)
+          : [],
+      );
+      const embeds =
+        methods.has("embedContent") ||
+        methods.has("batchEmbedContents") ||
+        methods.has("batchEmbedContent");
+      const specialized = geminiSpecializedModel.test(id);
+      const generatesText = methods.has("generateContent") && !specialized;
+      const enabled = generatesText || embeds;
+      return {
+        provider: this.id,
+        id,
+        displayName: m.displayName,
+        enabled,
+        capabilities: {
+          textInput: enabled,
+          textOutput: generatesText,
+          streaming: generatesText,
+          toolCalling: generatesText,
+          structuredOutput: generatesText,
+          embeddings: embeds,
+          contextWindow:
+            typeof m.inputTokenLimit === "number" ? m.inputTokenLimit : undefined,
+          maxOutputTokens:
+            typeof m.outputTokenLimit === "number"
+              ? m.outputTokenLimit
+              : undefined,
+        },
+        metadata: {
+          supportedGenerationMethods: [...methods],
+          specialized,
+        },
+      };
+    });
   }
   private body(req: ChatRequest) {
     return {
