@@ -14,7 +14,7 @@ const server = http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/v1/models") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
-      JSON.stringify({ data: [{ id: "mock-model", object: "model" }] }),
+      JSON.stringify({ data: [{ id: "mock-model", object: "model", capabilities: { textInput: true, textOutput: true, streaming: true, toolCalling: true, structuredOutput: true, imageInput: true, embeddings: true } }] }),
     );
     return;
   }
@@ -27,14 +27,19 @@ const server = http.createServer(async (request, response) => {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
       });
+      if (body.tools?.length) {
+        response.write(`data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-weather", type: "function", function: { name: "weather", arguments: "{\"city\":" } }] }, finish_reason: null }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"Paris\"}" } }, { index: 1, id: "call-time", type: "function", function: { name: "time", arguments: "{}" } }] }, finish_reason: null }] })}\n\n`);
+      } else {
+        response.write(
+          `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { content: "persistent-" }, finish_reason: null }] })}\n\n`,
+        );
+        response.write(
+          `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { content: "stream-ok" }, finish_reason: null }] })}\n\n`,
+        );
+      }
       response.write(
-        `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { content: "persistent-" }, finish_reason: null }] })}\n\n`,
-      );
-      response.write(
-        `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: { content: "stream-ok" }, finish_reason: null }] })}\n\n`,
-      );
-      response.write(
-        `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+        `data: ${JSON.stringify({ id: "mock-stream", choices: [{ delta: {}, finish_reason: body.tools?.length ? "tool_calls" : "stop" }] })}\n\n`,
       );
       response.write(
         `data: ${JSON.stringify({ id: "mock-stream", choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } })}\n\n`,
@@ -42,6 +47,7 @@ const server = http.createServer(async (request, response) => {
       response.end("data: [DONE]\n\n");
       return;
     }
+    const containsImage = body.messages?.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({
@@ -49,7 +55,7 @@ const server = http.createServer(async (request, response) => {
         model: "mock-model",
         choices: [
           {
-            message: { role: "assistant", content: "persistent-provider-ok" },
+            message: { role: "assistant", content: containsImage ? "image-input-ok" : "persistent-provider-ok" },
             finish_reason: "stop",
           },
         ],

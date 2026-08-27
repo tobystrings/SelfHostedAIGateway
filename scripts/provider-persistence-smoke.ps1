@@ -77,6 +77,43 @@ function Invoke-Embeddings([string]$gatewayKey) {
     }
 }
 
+function Invoke-Multimodal([string]$gatewayKey) {
+    $body = @{
+        model = "mock-alias"
+        messages = @(@{ role = "user"; content = @(
+            @{ type = "text"; text = "inspect" },
+            @{ type = "image_url"; image_url = @{ url = "data:image/png;base64,aW1hZ2U=" } }
+        ) })
+    } | ConvertTo-Json -Depth 8
+    $result = Invoke-RestMethod "$base/v1/chat/completions" -Method Post `
+        -ContentType "application/json" -Body $body -Headers @{ Authorization = "Bearer $gatewayKey" }
+    if ($result.choices[0].message.content -ne "image-input-ok") { throw "Multimodal input was not preserved" }
+}
+
+function Invoke-ToolStream([string]$gatewayKey) {
+    $body = @{
+        model = "mock-alias"; stream = $true
+        messages = @(@{ role = "user"; content = "use tools" })
+        tools = @(
+            @{ type = "function"; function = @{ name = "weather"; parameters = @{ type = "object" } } },
+            @{ type = "function"; function = @{ name = "time"; parameters = @{ type = "object" } } }
+        )
+    } | ConvertTo-Json -Depth 8
+    $result = Invoke-WebRequest "$base/v1/chat/completions" -Method Post `
+        -ContentType "application/json" -Body $body -Headers @{ Authorization = "Bearer $gatewayKey" }
+    if ($result.Content -notmatch 'call-weather' -or $result.Content -notmatch 'call-time' -or
+        $result.Content -notmatch 'tool_calls' -or $result.Content -notmatch 'Paris') {
+        throw "Streaming tool calls were not OpenAI-compatible"
+    }
+}
+
+function Invoke-FreeOnlyStatus([string]$gatewayKey) {
+    $body = @{ model = "mock-alias"; messages = @(@{ role = "user"; content = "free only" }) } | ConvertTo-Json -Depth 5
+    $response = Invoke-WebRequest "$base/v1/chat/completions" -Method Post -ContentType "application/json" `
+        -Body $body -Headers @{ Authorization = "Bearer $gatewayKey"; "x-gateway-routing-mode" = "FREE_ONLY" } -SkipHttpErrorCheck
+    return [int]$response.StatusCode
+}
+
 function Invoke-ChatStatus([string]$gatewayKey) {
     $body = @{
         model = "mock-alias"
@@ -118,9 +155,15 @@ try {
     $models = Invoke-RestMethod "$base/api/admin/models" -WebSession $session
     $model = $models | Where-Object { $_.provider_slug -eq $providerSlug }
     if (-not $model) { throw "Discovered model was not persisted" }
+    $capabilities = $model.capabilities
+    $capabilities | Add-Member -NotePropertyName imageInput -NotePropertyValue $true -Force
+    $modelPatch = @{ alias = "mock-alias"; capabilities = $capabilities; costClassification = "free" } | ConvertTo-Json -Depth 8
     $null = Invoke-RestMethod "$base/api/admin/models/$($model.id)" -Method Patch `
-        -ContentType "application/json" -Body '{"alias":"mock-alias"}' `
+        -ContentType "application/json" -Body $modelPatch `
         -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
+    $verification = Invoke-RestMethod "$base/api/admin/models/$($model.id)/verify" -Method Post `
+        -ContentType "application/json" -Body '{}' -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
+    if ($verification.verification_status -ne "verified" -or -not $verification.callable) { throw "Model verification did not mark the model callable" }
     $keyBody = @{
         name = $keyName
         scopes = @("gateway:invoke")
@@ -134,6 +177,14 @@ try {
     Invoke-Model $key.key
     Invoke-Stream $key.key
     Invoke-Embeddings $key.key
+    Invoke-Multimodal $key.key
+    Invoke-ToolStream $key.key
+    if ((Invoke-FreeOnlyStatus $key.key) -ne 200) { throw "FREE_ONLY did not route a classified free model" }
+    $null = Invoke-RestMethod "$base/api/admin/models/$($model.id)" -Method Patch -ContentType "application/json" `
+        -Body '{"costClassification":"paid"}' -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
+    if ((Invoke-FreeOnlyStatus $key.key) -ne 503) { throw "FREE_ONLY allowed paid fallback" }
+    $null = Invoke-RestMethod "$base/api/admin/models/$($model.id)" -Method Patch -ContentType "application/json" `
+        -Body '{"costClassification":"free"}' -Headers @{ "x-csrf-token" = $login.csrf } -WebSession $session
     docker compose exec -T postgres psql -U gateway -d gateway -c `
         "INSERT INTO rate_limit_policies(name,subject_type,subject_value,requests_per_minute) VALUES('$ratePolicyName','api_key','$($key.id)',0);" | Out-Null
     if ((Invoke-ChatStatus $key.key) -ne 429) {
@@ -164,6 +215,11 @@ try {
         scopedRateLimitStatus = 429
         scopedBudgetStatus = 402
         encryptedCredentialPersisted = $true
+        liveModelVerification = $true
+        multimodalImageInput = $true
+        streamedToolCalls = $true
+        freeOnlyEligibleStatus = 200
+        freeOnlyPaidFallbackStatus = 503
     } | ConvertTo-Json -Compress
 } finally {
     try {
